@@ -11,11 +11,11 @@ use App\Models\Room;
 use App\Services\NotificationService;
 use App\Services\RoomUtilizationService;
 use App\Support\RoomCategories;
+use App\Support\ScheduleCache;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
-use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
@@ -78,24 +78,33 @@ class RoomController extends Controller
         // PERFORMANCE: this full fetch + summarize runs on every visit
         // to this page (i.e. every sidebar click into Rooms), even
         // though the underlying schedule data rarely changes between
-        // two clicks a few seconds apart. Cache the (rooms, summaries)
-        // pair for a short window, keyed by the exact filter query and
-        // the user's Viewing Term, so repeat/rapid navigation into this
-        // page is instant instead of re-querying + re-computing every
-        // time. Short TTL (15s) keeps staleness negligible for an
-        // admin tool while still absorbing the common "click away and
-        // click back" / pagination-click pattern that was the main
-        // source of the lag.
-        $cacheKey = 'rooms.index.'.md5(serialize([
-            \App\Support\ViewingTerm::resolve($request)?->id,
-            $request->query(),
-        ]));
+        // two clicks. Cache the (rooms, summaries) pair, keyed by:
+        //
+        //   - the exact filter query string,
+        //   - the user's Viewing Term (utilization is computed per
+        //     term), and
+        //   - THE USER — applyScope() above narrows the rooms to the
+        //     user's College/Department, so two users must never share
+        //     an entry (that would leak one College's rooms to another).
+        //
+        // Invalidation is automatic: ScheduleCache rotates whenever any
+        // scheduling/room/reference table is written, so an edited room
+        // or a saved schedule shows up on the very next visit. The TTL
+        // is only a backstop.
+        [$allRooms, $summaries] = ScheduleCache::remember(
+            'rooms.index',
+            [
+                'user' => $request->user()?->getAuthIdentifier(),
+                'term' => \App\Support\ViewingTerm::resolve($request)?->id,
+                'query' => $request->query(),
+            ],
+            300,
+            function () use ($roomsQuery) {
+                $rooms = $roomsQuery->orderBy('room_code')->get();
 
-        [$allRooms, $summaries] = Cache::remember($cacheKey, now()->addSeconds(15), function () use ($roomsQuery) {
-            $rooms = $roomsQuery->orderBy('room_code')->get();
-
-            return [$rooms, $this->utilization->summarizeRooms($rooms)];
-        });
+                return [$rooms, $this->utilization->summarizeRooms($rooms)];
+            },
+        );
 
         $filtered = $allRooms->filter(function (Room $room) use ($summaries, $quickFilter, $utilizationMin, $utilizationMax, $availabilityFilter) {
             $summary = $summaries[$room->id];

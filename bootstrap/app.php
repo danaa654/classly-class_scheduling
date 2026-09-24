@@ -23,6 +23,25 @@ return Application::configure(basePath: dirname(__DIR__))
             // the middleware so it never redirects against itself.
             \App\Http\Middleware\EnsurePasswordIsCurrent::class,
         ]);
+
+        // PERFORMANCE — compress API payloads. Gzips JSON/text
+        // responses (recommendations, previews, report exports, etc.)
+        // above a minimum size for any client that accepts gzip. See
+        // App\Http\Middleware\CompressApiPayload for what it
+        // deliberately skips (Inertia page visits, already-compressed
+        // responses, tiny payloads).
+        $middleware->append(\App\Http\Middleware\CompressApiPayload::class);
+
+        // PERFORMANCE — cache API responses. Route middleware alias for
+        // the expensive read-only JSON endpoints (recommendations,
+        // busy times, room schedules, ...). Usage in routes/web.php:
+        //     ->middleware('cache.json:120')
+        // Entries are per-user + per-Viewing-Term and are invalidated
+        // automatically on any scheduling/reference-data write — see
+        // App\Http\Middleware\CacheReadOnlyJson and App\Support\ScheduleCache.
+        $middleware->alias([
+            'cache.json' => \App\Http\Middleware\CacheReadOnlyJson::class,
+        ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         // Belt-and-suspenders alongside the Route::fallback() in web.php:

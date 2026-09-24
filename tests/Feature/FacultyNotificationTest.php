@@ -210,12 +210,17 @@ class FacultyNotificationTest extends TestCase
             ['max_teaching_units' => 30]
         ))->assertRedirect();
 
-        // Assistant Dean is not authorized to change the ceiling
-        // directly (see FacultyController::update()'s pin-back for
-        // non-changeMaxLoad roles) — this asserts the pin-back holds
-        // (no workload notification fires for a value that was
-        // silently reverted).
-        $this->assertSame([], $this->recipientIdsFor(NotificationService::TYPE_FACULTY_WORKLOAD_UPDATED));
+        // Per FacultyPolicy::changeMaxLoad(), Assistant Dean is one of
+        // the roles that may set the load ceiling directly (same as
+        // Admin/Registrar/Dean/OIC), so FacultyController::update()
+        // persists the new value and fires the workload notification
+        // to everyone except the actor.
+        $this->assertSame(30, $faculty->fresh()->max_teaching_units);
+
+        $recipients = $this->recipientIdsFor(NotificationService::TYPE_FACULTY_WORKLOAD_UPDATED);
+
+        $this->assertEqualsCanonicalizing([$admin->id, $registrar->id], $recipients);
+        $this->assertNotContains($assistantDean->id, $recipients, 'actor (Assistant Dean) must never be notified');
     }
 
     // 8. Faculty deletion request (Dean/OIC has no direct delete path — see FacultyRequestController).

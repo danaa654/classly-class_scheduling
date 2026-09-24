@@ -19,6 +19,7 @@ import Toast from 'primevue/toast';
 import ProgressBar from 'primevue/progressbar';
 import RoomRecommendedSubjects from '@/Components/Scheduling/RoomRecommendedSubjects.vue';
 import InfoPopover from '@/Components/InfoPopover.vue';
+import LoadingSkeleton from '@/Components/LoadingSkeleton.vue';
 import { useTheme } from '@/composables/useTheme';
 
 const { theme } = useTheme();
@@ -764,7 +765,9 @@ const closeSchedule = () => {
                     </div>
 
                     <!-- Rooms Table -->
+                    <LoadingSkeleton v-if="loading && !rooms.data.length" variant="table" :rows="8" :columns="7" />
                     <DataTable
+                        v-else
                         :value="rooms.data"
                         :loading="loading"
                         dataKey="id"

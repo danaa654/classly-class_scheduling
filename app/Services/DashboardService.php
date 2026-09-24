@@ -10,6 +10,8 @@ use App\Models\SectionSubject;
 use App\Models\User;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
+use App\Support\ScheduleCache;
+use App\Support\ViewingTerm;
 
 /**
  * DASHBOARD DATA — single source of truth for every widget on the
@@ -66,15 +68,65 @@ class DashboardService
      */
     public function overview(User $user): array
     {
+        // PERFORMANCE — this endpoint fans out into ~10 aggregate
+        // queries (kpis/progress/conflicts each scan Section/
+        // SectionSubject/Faculty/Room) and is hit on every Dashboard
+        // load, so the computed result is cached.
+        //
+        // The cache is keyed by the user's scope (Administrator/
+        // Registrar share one institution-wide entry; Dean/OIC/
+        // Assistant Dean each get their own College/GenEd entry) AND
+        // by the user's Viewing Academic Term — every number below is
+        // computed for that term via ScheduleConflictService::
+        // activeSemesterSectionIds(), so an Administrator browsing a
+        // planning term must never share an entry with users on the
+        // real Active term.
+        //
+        // Invalidation is automatic: ScheduleCache rotates its
+        // generation whenever ANY scheduling/reference-data table is
+        // written (see App\Support\ScheduleCache), so the Dashboard
+        // reflects a saved schedule on the very next load. The TTL is
+        // only a backstop.
         $scope = $this->scopeFor($user);
-        $sectionIds = $this->scopedSectionIds($scope);
 
-        return [
-            'scope' => $scope,
-            'kpis' => $this->kpis($scope, $sectionIds),
-            'progress' => $this->schedulingProgress($scope, $sectionIds),
-            'conflicts' => $this->conflictSummary($scope, $sectionIds),
-        ];
+        return ScheduleCache::remember(
+            'dashboard.overview',
+            [
+                'type' => $scope['type'],
+                'college_id' => $scope['college_id'] ?? null,
+                'term' => ViewingTerm::resolve(request())?->id,
+            ],
+            self::TTL_SECONDS,
+            function () use ($scope) {
+                $sectionIds = $this->scopedSectionIds($scope);
+
+                return [
+                    'scope' => $scope,
+                    'kpis' => $this->kpis($scope, $sectionIds),
+                    'progress' => $this->schedulingProgress($scope, $sectionIds),
+                    'conflicts' => $this->conflictSummary($scope, $sectionIds),
+                ];
+            },
+        );
+    }
+
+    /**
+     * Backstop TTL for a cached Dashboard overview. Writes invalidate
+     * it immediately (ScheduleCache generation), so this only matters
+     * if a change slips in through a path the write-detector can't see
+     * (e.g. a manual edit directly in the database).
+     */
+    private const TTL_SECONDS = 300;
+
+    /**
+     * Bust every cached Dashboard overview (and every other
+     * ScheduleCache entry). Normally unnecessary — writes already do
+     * this automatically — but kept for callers that want to force it.
+     * $collegeId is accepted for backwards compatibility and ignored.
+     */
+    public static function forget(?int $collegeId = null): void
+    {
+        ScheduleCache::bump();
     }
 
     /**

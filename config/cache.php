@@ -15,6 +15,10 @@ return [
     |
     */
 
+    // PERFORMANCE — 'database' is the safe default (works everywhere and is
+    // shared between app servers). Set CACHE_STORE=redis in .env once Redis
+    // is installed for the fastest cache. NEVER use 'file'/'array' with more
+    // than one app server behind the load balancer.
     'default' => env('CACHE_STORE', 'database'),
 
     /*

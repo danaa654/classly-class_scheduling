@@ -1,9 +1,10 @@
 <script setup>
 import { Head, useForm, usePage, Link, router } from '@inertiajs/vue3';
-import { ref, computed, watch } from 'vue';
+import { ref, computed, watch, nextTick } from 'vue';
 import { useToast } from 'primevue/usetoast';
 import Swal from 'sweetalert2';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import BackLink from '@/Components/BackLink.vue';
 import Card from 'primevue/card';
 import InputText from 'primevue/inputtext';
 import InputNumber from 'primevue/inputnumber';
@@ -200,6 +201,34 @@ const onSaveFaculty = () => {
 /* ------------------------------------------------------------------ */
 
 const selectedSubjectIds = ref((props.faculty.subjects ?? []).map((subject) => subject.id));
+
+// The "Assign Subjects" search box below is PrimeVue MultiSelect's
+// built-in filter input, teleported into an overlay only while the
+// dropdown is open. The app-wide v-uppercase directive looks for an
+// <input> inside the element it's attached to at mount time, so it
+// never finds this one — it doesn't exist in that spot yet, and once
+// it does it's been moved outside this component's DOM subtree
+// entirely. Uppercasing it here instead, via the component's own
+// `filter` event and its internal filterInput ref, so what you type
+// to search matches the ALL-CAPS subject codes it's searching
+// against.
+const subjectMultiSelect = ref(null);
+const onSubjectFilter = (event) => {
+    const upper = event.value.toUpperCase();
+    if (event.value === upper) return;
+
+    const inputEl = subjectMultiSelect.value?.$refs?.filterInput?.$el;
+    const start = inputEl?.selectionStart;
+    const end = inputEl?.selectionEnd;
+
+    subjectMultiSelect.value.filterValue = upper;
+
+    nextTick(() => {
+        if (inputEl && document.activeElement === inputEl) {
+            inputEl.setSelectionRange(start, end);
+        }
+    });
+};
 const savingQualifications = ref(false);
 
 // Groups the (already relevance-ordered — see FacultyController::show())
@@ -703,9 +732,7 @@ const saveEditPlacement = async (placement, confirmedKeys = {}) => {
         <div class="max-w-6xl mx-auto w-full" :class="isDark ? 'dark-scope' : ''">
             <!-- Back link -->
             <div class="mb-4">
-                <Link :href="route('scheduling.faculty')" class="text-sm text-slate-500 hover:text-slate-700">
-                    <i class="pi pi-arrow-left mr-1"></i> Back to Faculty
-                </Link>
+                <BackLink :href="route('scheduling.faculty')" label="Back to Faculty" />
             </div>
 
             <!-- Page Title -->
@@ -828,6 +855,7 @@ const saveEditPlacement = async (placement, confirmedKeys = {}) => {
                             <TabPanel value="qualifications">
                                 <label class="text-sm font-medium text-slate-700">Assign Subjects</label>
                                 <MultiSelect
+                                    ref="subjectMultiSelect"
                                     v-model="selectedSubjectIds"
                                     :options="subjectGroups"
                                     optionLabel="subject_code"
@@ -840,6 +868,7 @@ const saveEditPlacement = async (placement, confirmedKeys = {}) => {
                                     placeholder="Select subjects this faculty member can teach"
                                     class="w-full mt-1 neu-inset !border-none"
                                     :pt="{ overlay: { class: isDark ? 'dark-scope' : '' } }"
+                                    @filter="onSubjectFilter"
                                 >
                                     <template #optiongroup="{ option }">
                                         <span class="text-xs font-semibold tracking-wide text-slate-400 uppercase">{{ option.label }}</span>
@@ -847,6 +876,9 @@ const saveEditPlacement = async (placement, confirmedKeys = {}) => {
                                     <template #option="{ option }">
                                         <span class="font-medium">{{ option.subject_code }}</span>
                                         <span class="text-slate-400"> — {{ option.subject_title }}</span>
+                                        <span v-if="option.other_qualified_faculty?.length" class="block text-[11px] text-sky-600">
+                                            Also assigned to {{ option.other_qualified_faculty.join(', ') }}
+                                        </span>
                                     </template>
                                 </MultiSelect>
 

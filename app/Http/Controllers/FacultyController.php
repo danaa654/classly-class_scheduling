@@ -264,13 +264,30 @@ class FacultyController extends Controller
             'subjects' => Subject::query()
                 ->where('is_active', true)
                 ->orderBy('subject_code')
+                ->with(['faculty' => function ($query) use ($faculty) {
+                    // Everyone ELSE already qualified for this subject —
+                    // shown as a soft "Also assigned to ..." note in the
+                    // picker so an admin knows a subject isn't exclusive
+                    // before assigning it here too. Informational only;
+                    // it never blocks the selection.
+                    $query->where('faculties.id', '!=', $faculty->id)->select('faculties.id', 'first_name', 'last_name', 'middle_name', 'suffix');
+                }])
                 ->get(['id', 'subject_code', 'subject_title', 'category', 'units', 'college_id'])
                 ->sortBy(fn (Subject $subject) => match (true) {
                     $subject->category === 'Major' && $subject->college_id === $faculty->college_id => 0,
                     AccessScope::isSharedCategory($subject->category) => 1,
                     default => 2,
                 })
-                ->values(),
+                ->values()
+                ->map(fn (Subject $subject) => [
+                    'id' => $subject->id,
+                    'subject_code' => $subject->subject_code,
+                    'subject_title' => $subject->subject_title,
+                    'category' => $subject->category,
+                    'units' => $subject->units,
+                    'college_id' => $subject->college_id,
+                    'other_qualified_faculty' => $subject->faculty->map->full_name->values(),
+                ]),
             // Same cap the Faculty Master (Index) edit modal uses — needed
             // here so the Details page's own Edit Faculty modal can bound
             // the Maximum Teaching Units field the same way instead of
@@ -463,6 +480,18 @@ class FacultyController extends Controller
         $data = $request->validate([
             'value' => ['required', 'integer', 'min:0', "max:{$cap}"],
         ]);
+
+        // Never lower the ceiling below the load already scheduled.
+        $currentLoad = $this->workloadService->currentLoad($faculty);
+        $existingMax = $usesHours ? (int) $faculty->max_weekly_hours : (int) $faculty->max_teaching_units;
+
+        if ($data['value'] < $existingMax && $data['value'] < $currentLoad) {
+            $unit = $usesHours ? 'hour(s)' : 'unit(s)';
+
+            return back()->withErrors([
+                'value' => "This faculty member already has {$currentLoad} {$unit} of scheduled subjects. The maximum cannot be set below {$currentLoad}.",
+            ]);
+        }
 
         $oldMaxTeachingUnits = $faculty->max_teaching_units;
 

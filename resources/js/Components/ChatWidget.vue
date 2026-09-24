@@ -264,7 +264,9 @@ function closePanel() {
 
 function startThreadPolling() {
     stopThreadPolling();
-    threadTimer = setInterval(pollThread, THREAD_POLL_MS);
+    threadTimer = setInterval(() => {
+        if (!document.hidden) pollThread();
+    }, THREAD_POLL_MS);
 }
 
 function stopThreadPolling() {
@@ -312,12 +314,20 @@ watch(isOpen, (open) => {
     }
 });
 
+function onVisible() {
+    if (!document.hidden) pollUnreadCount();
+}
+
 onMounted(() => {
-    badgeTimer = setInterval(pollUnreadCount, BADGE_POLL_MS);
+    badgeTimer = setInterval(() => {
+        if (!document.hidden) pollUnreadCount();
+    }, BADGE_POLL_MS);
+    document.addEventListener('visibilitychange', onVisible);
 });
 
 onUnmounted(() => {
     clearInterval(badgeTimer);
+    document.removeEventListener('visibilitychange', onVisible);
     stopThreadPolling();
 });
 </script>
@@ -396,6 +406,8 @@ onUnmounted(() => {
                                 v-if="contact.user.profile_photo_url"
                                 :src="contact.user.profile_photo_url"
                                 alt=""
+                                loading="lazy"
+                                decoding="async"
                                 class="h-9 w-9 shrink-0 rounded-full object-cover"
                             />
                             <span

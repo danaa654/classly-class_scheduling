@@ -134,14 +134,23 @@ function onClickOutside(event) {
     }
 }
 
+function onVisible() {
+    if (!document.hidden) pollUnreadCount();
+}
+
 onMounted(() => {
-    pollTimer = setInterval(pollUnreadCount, 20000);
+    // Skip polling while the tab is hidden; catch up on return.
+    pollTimer = setInterval(() => {
+        if (!document.hidden) pollUnreadCount();
+    }, 20000);
+    document.addEventListener('visibilitychange', onVisible);
     document.addEventListener('click', onClickOutside);
 });
 
 onUnmounted(() => {
     if (pollTimer) clearInterval(pollTimer);
     document.removeEventListener('click', onClickOutside);
+    document.removeEventListener('visibilitychange', onVisible);
 });
 </script>
 
@@ -200,6 +209,8 @@ onUnmounted(() => {
                             v-if="notification.actor?.profile_photo_url"
                             :src="notification.actor.profile_photo_url"
                             alt=""
+                            loading="lazy"
+                            decoding="async"
                             class="h-9 w-9 shrink-0 rounded-full object-cover"
                         />
                         <span v-else-if="notification.actor" class="neu-icon-chip flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white">

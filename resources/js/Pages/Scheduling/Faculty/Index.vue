@@ -17,6 +17,7 @@ import Tag from 'primevue/tag';
 import Dialog from 'primevue/dialog';
 import Toast from 'primevue/toast';
 import InfoPopover from '@/Components/InfoPopover.vue';
+import LoadingSkeleton from '@/Components/LoadingSkeleton.vue';
 import { useTheme } from '@/composables/useTheme';
 
 const { theme } = useTheme();
@@ -598,7 +599,9 @@ const fullName = (faculty) => {
                         <i class="pi pi-eye" :class="isDark ? 'text-slate-500' : 'text-slate-400'"></i>
                         Click a faculty member's name to manage their teaching qualifications and workload.
                     </p>
+                    <LoadingSkeleton v-if="loading && !faculties.data.length" variant="table" :rows="8" :columns="6" />
                     <DataTable
+                        v-else
                         :value="faculties.data"
                         :loading="loading"
                         dataKey="id"

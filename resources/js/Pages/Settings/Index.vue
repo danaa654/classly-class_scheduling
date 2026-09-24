@@ -30,6 +30,37 @@ import { useTheme } from '@/composables/useTheme';
 const { theme } = useTheme();
 const isDark = computed(() => theme.value === 'dark');
 
+// Colored panel chrome for every Settings tab (header band + accent
+// border), so each tab reads as its own section instead of a plain
+// white box. Full class strings are written out so Tailwind can see them.
+const PANEL_TONES = {
+    blue: {
+        light: { border: 'border-blue-100 bg-blue-50/70', band: 'bg-gradient-to-r from-blue-100/80 via-cyan-50 to-transparent', icon: 'bg-[#2563EB]' },
+        dark: { border: 'border-blue-400/20 bg-blue-500/10', band: 'bg-gradient-to-r from-blue-500/25 via-cyan-500/10 to-transparent', icon: 'bg-blue-500' },
+    },
+    violet: {
+        light: { border: 'border-violet-100 bg-violet-50/70', band: 'bg-gradient-to-r from-violet-100/80 via-fuchsia-50 to-transparent', icon: 'bg-violet-600' },
+        dark: { border: 'border-violet-400/20 bg-violet-500/10', band: 'bg-gradient-to-r from-violet-500/25 via-fuchsia-500/10 to-transparent', icon: 'bg-violet-500' },
+    },
+    emerald: {
+        light: { border: 'border-emerald-100 bg-emerald-50/70', band: 'bg-gradient-to-r from-emerald-100/80 via-teal-50 to-transparent', icon: 'bg-emerald-600' },
+        dark: { border: 'border-emerald-400/20 bg-emerald-500/10', band: 'bg-gradient-to-r from-emerald-500/25 via-teal-500/10 to-transparent', icon: 'bg-emerald-500' },
+    },
+    amber: {
+        light: { border: 'border-amber-100 bg-amber-50/70', band: 'bg-gradient-to-r from-amber-100/80 via-orange-50 to-transparent', icon: 'bg-amber-500' },
+        dark: { border: 'border-amber-400/20 bg-amber-500/10', band: 'bg-gradient-to-r from-amber-500/25 via-orange-500/10 to-transparent', icon: 'bg-amber-500' },
+    },
+    indigo: {
+        light: { border: 'border-indigo-100 bg-indigo-50/70', band: 'bg-gradient-to-r from-indigo-100/80 via-slate-50 to-transparent', icon: 'bg-indigo-600' },
+        dark: { border: 'border-indigo-400/20 bg-indigo-500/10', band: 'bg-gradient-to-r from-indigo-500/25 via-slate-500/10 to-transparent', icon: 'bg-indigo-500' },
+    },
+    rose: {
+        light: { border: 'border-rose-100 bg-rose-50/70', band: 'bg-gradient-to-r from-rose-100/80 via-pink-50 to-transparent', icon: 'bg-rose-500' },
+        dark: { border: 'border-rose-400/20 bg-rose-500/10', band: 'bg-gradient-to-r from-rose-500/25 via-pink-500/10 to-transparent', icon: 'bg-rose-500' },
+    },
+};
+const panelTone = (name) => PANEL_TONES[name][isDark.value ? 'dark' : 'light'];
+
 const props = defineProps({
     visibleGroups: { type: Array, default: () => [] },
     editableGroups: { type: Array, default: () => [] },
@@ -268,15 +299,24 @@ const onUpdateAccount = () => {
             <!-- Page Title -->
             <div class="neu-card neu-spotlight relative mb-6 overflow-hidden rounded-2xl">
                 <div class="pointer-events-none absolute inset-0 overflow-hidden rounded-2xl">
-                    <div class="absolute inset-0 bg-gradient-to-br from-blue-50 via-transparent to-red-50/60"></div>
-                    <div class="absolute -right-10 -top-16 h-44 w-44 rounded-full bg-gradient-to-br from-blue-200/80 via-blue-100/40 to-transparent"></div>
-                    <div class="absolute -bottom-20 right-16 h-40 w-40 rounded-full bg-gradient-to-tr from-red-200/70 via-red-100/30 to-transparent"></div>
-                    <div class="absolute -left-10 bottom-0 h-28 w-28 rounded-full bg-gradient-to-tr border-4 from-blue-100/60 to-transparent border-blue-100"></div>
-                    <div class="absolute left-[38%] top-0 h-3 w-3 rounded-full bg-gradient-to-br from-red-400/80 to-blue-300/60"></div>
-                    <div class="absolute left-[55%] bottom-4 h-20 w-20 rounded-full bg-gradient-to-r blur-xl from-blue-200/40 to-red-200/40"></div>
+                    <!-- These blobs were hardcoded to light-mode colors
+                    (blue-50/red-50) regardless of theme, while the
+                    heading/paragraph text below picked up dark mode's
+                    white/light-gray from global dark-scope styling —
+                    pairing light-on-light backgrounds with near-white
+                    text is what made this header unreadable in dark
+                    mode specifically. Faculty Master's header (and
+                    every other page header) already branches these on
+                    isDark; this one just hadn't been updated to match. -->
+                    <div class="absolute inset-0 bg-gradient-to-br" :class="isDark ? 'from-blue-500/10 via-transparent to-red-500/10' : 'from-blue-50 via-transparent to-red-50/60'"></div>
+                    <div class="absolute -right-10 -top-16 h-44 w-44 rounded-full bg-gradient-to-br" :class="isDark ? 'from-blue-500/20 via-blue-500/5 to-transparent' : 'from-blue-200/80 via-blue-100/40 to-transparent'"></div>
+                    <div class="absolute -bottom-20 right-16 h-40 w-40 rounded-full bg-gradient-to-tr" :class="isDark ? 'from-red-500/20 via-red-500/5 to-transparent' : 'from-red-200/70 via-red-100/30 to-transparent'"></div>
+                    <div class="absolute -left-10 bottom-0 h-28 w-28 rounded-full bg-gradient-to-tr border-4" :class="isDark ? 'from-blue-500/10 to-transparent border-blue-400/10' : 'from-blue-100/60 to-transparent border-blue-100'"></div>
+                    <div class="absolute left-[38%] top-0 h-3 w-3 rounded-full bg-gradient-to-br" :class="isDark ? 'from-red-400/50 to-blue-400/30' : 'from-red-400/80 to-blue-300/60'"></div>
+                    <div class="absolute left-[55%] bottom-4 h-20 w-20 rounded-full bg-gradient-to-r blur-xl" :class="isDark ? 'from-blue-500/10 to-red-500/10' : 'from-blue-200/40 to-red-200/40'"></div>
                 </div>
                 <div class="relative rounded-2xl p-6 transition-colors duration-300">
-                <h1 class="text-2xl font-bold tracking-tight flex items-center gap-2 text-[#1E293B]">
+                <h1 class="text-2xl font-bold tracking-tight flex items-center gap-2" :class="isDark ? 'text-white' : 'text-[#1E293B]'">
                     Settings
                     <InfoPopover
                         title="Settings"
@@ -289,7 +329,7 @@ const onUpdateAccount = () => {
                         ]"
                     />
                 </h1>
-                <p class="mt-1 text-slate-500 max-w-3xl">
+                <p class="mt-1 max-w-3xl" :class="isDark ? 'text-slate-400' : 'text-slate-500'">
                     System-wide configuration. Faculty, Rooms, Subjects, Sections, Programs, Colleges and the
                     Curriculum keep their own dedicated pages — Settings only controls how the system behaves.
                 </p>
@@ -310,12 +350,19 @@ const onUpdateAccount = () => {
                 <TabPanels>
                     <!-- ============================== GENERAL ============================== -->
                     <TabPanel v-if="has('general')" value="general">
-                        <div class="neu-card rounded-2xl p-6 transition-colors duration-300">
-                        <Card class="!rounded-2xl !bg-transparent !border-0 !shadow-none" :pt="{ body: { class: '!bg-transparent !p-0' } }">
-                            <template #content>
-                                <h2 class="text-lg font-bold text-[#1E293B] mb-1">General</h2>
-                                <p class="text-sm text-slate-500 mb-6">School identity shown across the system.</p>
-
+                        <div class="overflow-hidden rounded-2xl border transition-colors duration-300" :class="panelTone('blue').border">
+                            <div class="flex items-start justify-between gap-4 px-6 py-5" :class="panelTone('blue').band">
+                                <div class="flex items-start gap-3">
+                                    <span class="flex h-11 w-11 flex-none items-center justify-center rounded-xl text-lg text-white shadow-sm" :class="panelTone('blue').icon">
+                                        <i class="pi pi-building"></i>
+                                    </span>
+                                    <div>
+                                        <h2 class="text-lg font-bold" :class="isDark ? 'text-white' : 'text-[#1E293B]'">General</h2>
+                                        <p class="mt-0.5 max-w-3xl text-sm" :class="isDark ? 'text-slate-300' : 'text-slate-600'">School identity shown across the system.</p>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="px-6 pb-6 pt-5">
                                 <!-- School Logo — used across the system's letterhead, and as
                                      the fallback logo image on every printed report (see
                                      resources/views/reports/partials/letterhead.blade.php). -->
@@ -364,59 +411,114 @@ const onUpdateAccount = () => {
                                 <div v-if="canEdit('general')" class="flex justify-end mt-6">
                                     <Button label="Save Changes" icon="pi pi-check" :loading="generalForm.processing" @click="saveGeneral" />
                                 </div>
-                            </template>
-                        </Card>
+                            </div>
                         </div>
                     </TabPanel>
 
                     <!-- ============================== ACADEMIC ============================== -->
                     <TabPanel v-if="has('academic')" value="academic">
-                        <div class="neu-card rounded-2xl p-6 transition-colors duration-300" v-if="schoolYear">
-                        <Card class="!rounded-2xl !bg-transparent !border-0 !shadow-none" :pt="{ body: { class: '!bg-transparent !p-0' } }">
-                            <template #content>
-                                <div class="flex items-center justify-between mb-1">
-                                    <h2 class="text-lg font-bold text-[#1E293B]">Scheduling Window &amp; Calendar</h2>
-                                    <Tag severity="info" value="Managed in Term Setup" />
+                        <div
+                            v-if="schoolYear"
+                            class="overflow-hidden rounded-2xl border transition-colors duration-300"
+                            :class="isDark ? 'border-blue-400/20 bg-blue-500/10' : 'border-blue-100 bg-blue-50/70'"
+                        >
+                            <!-- Colored header band -->
+                            <div
+                                class="flex flex-wrap items-center justify-between gap-3 px-6 py-5"
+                                :class="isDark ? 'bg-gradient-to-r from-blue-500/25 via-cyan-500/10 to-transparent' : 'bg-gradient-to-r from-blue-100/80 via-cyan-50 to-transparent'"
+                            >
+                                <div class="flex items-center gap-3">
+                                    <span
+                                        class="flex h-11 w-11 flex-none items-center justify-center rounded-xl text-lg text-white shadow-sm"
+                                        :class="isDark ? 'bg-blue-500' : 'bg-[#2563EB]'"
+                                    >
+                                        <i class="pi pi-calendar-clock"></i>
+                                    </span>
+                                    <h2 class="text-lg font-bold" :class="isDark ? 'text-white' : 'text-[#1E293B]'">Scheduling Window &amp; Calendar</h2>
                                 </div>
-                                <p class="text-sm text-slate-500 mb-4">
+                                <Tag severity="info" value="Managed in Term Setup" />
+                            </div>
+
+                            <div class="px-6 pb-6 pt-4">
+                                <p class="mb-5 text-sm" :class="isDark ? 'text-slate-300' : 'text-slate-500'">
                                     Class Start/End Time, Time Interval, and Working Days already live on the
                                     Active School Year so the Auto Schedule engine has one source of truth. Change them from the
                                     Term Setup page — Settings only shows the current values here.
                                 </p>
-                                <div class="grid grid-cols-2 sm:grid-cols-3 gap-4 text-sm">
-                                    <div><span class="text-slate-400 block">Active School Year</span>{{ schoolYear.name }}</div>
-                                    <div><span class="text-slate-400 block">Class Hours</span>{{ formatTime12(schoolYear.class_start_time) }} – {{ formatTime12(schoolYear.class_end_time) }}</div>
-                                    <div><span class="text-slate-400 block">Time Interval</span>{{ schoolYear.time_interval }} minutes</div>
-                                    <div class="sm:col-span-2"><span class="text-slate-400 block">Working Days</span>{{ schoolYear.available_days.join(', ') }}</div>
+
+                                <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                                    <div class="flex items-center gap-3 rounded-xl px-4 py-3" :class="isDark ? 'bg-blue-500/10' : 'bg-blue-50'">
+                                        <span class="flex h-10 w-10 flex-none items-center justify-center rounded-lg" :class="isDark ? 'bg-blue-500/20 text-blue-300' : 'bg-blue-100 text-blue-600'">
+                                            <i class="pi pi-calendar"></i>
+                                        </span>
+                                        <div class="min-w-0">
+                                            <p class="text-xs font-medium" :class="isDark ? 'text-blue-300' : 'text-blue-600'">Active School Year</p>
+                                            <p class="truncate text-base font-bold" :class="isDark ? 'text-white' : 'text-[#1E293B]'">{{ schoolYear.name }}</p>
+                                        </div>
+                                    </div>
+                                    <div class="flex items-center gap-3 rounded-xl px-4 py-3" :class="isDark ? 'bg-violet-500/10' : 'bg-violet-50'">
+                                        <span class="flex h-10 w-10 flex-none items-center justify-center rounded-lg" :class="isDark ? 'bg-violet-500/20 text-violet-300' : 'bg-violet-100 text-violet-600'">
+                                            <i class="pi pi-clock"></i>
+                                        </span>
+                                        <div class="min-w-0">
+                                            <p class="text-xs font-medium" :class="isDark ? 'text-violet-300' : 'text-violet-600'">Class Hours</p>
+                                            <p class="text-base font-bold" :class="isDark ? 'text-white' : 'text-[#1E293B]'">{{ formatTime12(schoolYear.class_start_time) }} – {{ formatTime12(schoolYear.class_end_time) }}</p>
+                                        </div>
+                                    </div>
+                                    <div class="flex items-center gap-3 rounded-xl px-4 py-3" :class="isDark ? 'bg-amber-500/10' : 'bg-amber-50'">
+                                        <span class="flex h-10 w-10 flex-none items-center justify-center rounded-lg" :class="isDark ? 'bg-amber-500/20 text-amber-300' : 'bg-amber-100 text-amber-600'">
+                                            <i class="pi pi-stopwatch"></i>
+                                        </span>
+                                        <div class="min-w-0">
+                                            <p class="text-xs font-medium" :class="isDark ? 'text-amber-300' : 'text-amber-700'">Time Interval</p>
+                                            <p class="text-base font-bold" :class="isDark ? 'text-white' : 'text-[#1E293B]'">{{ schoolYear.time_interval }} minutes</p>
+                                        </div>
+                                    </div>
                                 </div>
-                                <Button as="a" :href="route('academic-calendar')" label="Open Term Setup" icon="pi pi-external-link" text class="!mt-4 !px-0" />
-                            </template>
-                        </Card>
+
+                                <div class="mt-3 rounded-xl px-4 py-3" :class="isDark ? 'bg-emerald-500/10' : 'bg-emerald-50'">
+                                    <p class="mb-2 flex items-center gap-2 text-xs font-medium" :class="isDark ? 'text-emerald-300' : 'text-emerald-700'">
+                                        <i class="pi pi-th-large"></i>
+                                        Working Days
+                                    </p>
+                                    <div class="flex flex-wrap gap-2">
+                                        <span
+                                            v-for="day in schoolYear.available_days"
+                                            :key="day"
+                                            class="rounded-full px-3 py-1 text-sm font-semibold"
+                                            :class="isDark ? 'bg-emerald-500/20 text-emerald-200' : 'bg-white text-emerald-700 shadow-sm'"
+                                        >{{ day }}</span>
+                                    </div>
+                                </div>
+
+                                <Button as="a" :href="route('academic-calendar')" label="Open Term Setup" icon="pi pi-external-link" size="small" class="!mt-5" />
+                            </div>
                         </div>
                     </TabPanel>
 
                     <!-- ============================== FACULTY & WORKLOAD ============================== -->
                     <TabPanel v-if="has('workload')" value="workload">
-                        <div class="neu-card rounded-2xl p-6 transition-colors duration-300">
-                        <Card class="!rounded-2xl !bg-transparent !border-0 !shadow-none" :pt="{ body: { class: '!bg-transparent !p-0' } }">
-                            <template #content>
-                                <h2 class="text-lg font-bold text-[#1E293B] mb-1">Faculty &amp; Workload</h2>
-                                <p class="text-sm text-slate-500 mb-5">
-                                    Auto Schedule prefers faculty with lower current workload and never auto-assigns past
-                                    the maximum load. Individual faculty-specific limits (if set on a Faculty record)
-                                    still take precedence over this system default. Max Daily Teaching Hours is a
-                                    separate, per-day ceiling — a faculty member can be well under their weekly Max
-                                    Teaching Load and still get crammed into too many hours on one single day.
-                                </p>
-
+                        <div class="overflow-hidden rounded-2xl border transition-colors duration-300" :class="panelTone('violet').border">
+                            <div class="flex items-start justify-between gap-4 px-6 py-5" :class="panelTone('violet').band">
+                                <div class="flex items-start gap-3">
+                                    <span class="flex h-11 w-11 flex-none items-center justify-center rounded-xl text-lg text-white shadow-sm" :class="panelTone('violet').icon">
+                                        <i class="pi pi-sliders-h"></i>
+                                    </span>
+                                    <div>
+                                        <h2 class="text-lg font-bold" :class="isDark ? 'text-white' : 'text-[#1E293B]'">Faculty &amp; Workload</h2>
+                                        <p class="mt-0.5 max-w-3xl text-sm" :class="isDark ? 'text-slate-300' : 'text-slate-600'">Auto Schedule prefers faculty with lower current workload and never auto-assigns past the maximum load. Individual faculty-specific limits (if set on a Faculty record) still take precedence over this system default. Max Daily Teaching Hours is a separate, per-day ceiling — a faculty member can be well under their weekly Max Teaching Load and still get crammed into too many hours on one single day.</p>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="px-6 pb-6 pt-5">
                                 <fieldset :disabled="!canEdit('workload')" class="grid grid-cols-1 sm:grid-cols-4 gap-5">
                                     <FloatLabel variant="on">
-                                        <!-- Capped at 42 to match FacultyLoadRequest::HARD_CAP_UNITS
+                                        <!-- Capped at 45 to match FacultyLoadRequest::HARD_CAP_UNITS
                                              (the institution-wide hard ceiling enforced server-side on
                                              every overload request) — never raise this without also
                                              raising HARD_CAP_UNITS, or the form will accept a value the
                                              backend will just reject/clamp anyway. -->
-                                        <InputNumber id="maxLoad" size="large" v-model="workloadForm.max_teaching_load" class="w-full" :min="1" :max="42" />
+                                        <InputNumber id="maxLoad" size="large" v-model="workloadForm.max_teaching_load" class="w-full" :min="1" :max="45" />
                                         <label for="maxLoad">Max Teaching Load (units/hrs)</label>
                                     </FloatLabel>
                                     <FloatLabel variant="on">
@@ -437,34 +539,33 @@ const onUpdateAccount = () => {
 
                                 <div class="flex items-center gap-3 mt-5">
                                     <ToggleSwitch v-model="workloadForm.allow_admin_override" :disabled="!canEdit('workload')" />
-                                    <span>Allow Administrator override above the maximum load</span>
+                                    <span>Allow Administrator, Registrar, Dean, OIC and Assistant Dean to go above the maximum load (up to 45 units)</span>
                                     <Tag severity="danger" value="HARD CONSTRAINT unless overridden" class="!text-[10px]" />
                                 </div>
 
                                 <div v-if="canEdit('workload')" class="flex justify-end mt-6">
                                     <Button label="Save Changes" icon="pi pi-check" :loading="workloadForm.processing" @click="saveWorkload" />
                                 </div>
-                            </template>
-                        </Card>
+                            </div>
                         </div>
                     </TabPanel>
 
                     <!-- ============================== ACTIVE SESSIONS ============================== -->
                     <TabPanel v-if="has('system') && isAdministrator" value="activeSessions">
-                        <div class="neu-card rounded-2xl p-6 transition-colors duration-300">
-                        <Card class="!rounded-2xl !bg-transparent !border-0 !shadow-none" :pt="{ body: { class: '!bg-transparent !p-0' } }">
-                            <template #content>
-                                <div class="flex items-start justify-between gap-4 mb-5">
+                        <div class="overflow-hidden rounded-2xl border transition-colors duration-300" :class="panelTone('emerald').border">
+                            <div class="flex items-start justify-between gap-4 px-6 py-5" :class="panelTone('emerald').band">
+                                <div class="flex items-start gap-3">
+                                    <span class="flex h-11 w-11 flex-none items-center justify-center rounded-xl text-lg text-white shadow-sm" :class="panelTone('emerald').icon">
+                                        <i class="pi pi-desktop"></i>
+                                    </span>
                                     <div>
-                                        <h2 class="text-lg font-bold text-[#1E293B] mb-1">Active Sessions</h2>
-                                        <p class="text-sm text-slate-500 max-w-2xl">
-                                            Everyone currently signed in to Classly. A user can appear more than once if
-                                            they're signed in on more than one device. Visible to Administrators only.
-                                        </p>
+                                        <h2 class="text-lg font-bold" :class="isDark ? 'text-white' : 'text-[#1E293B]'">Active Sessions</h2>
+                                        <p class="mt-0.5 max-w-3xl text-sm" :class="isDark ? 'text-slate-300' : 'text-slate-600'">Everyone currently signed in to Classly. A user can appear more than once if they're signed in on more than one device. Visible to Administrators only.</p>
                                     </div>
-                                    <Button icon="pi pi-refresh" label="Refresh" text @click="refreshSessions" />
                                 </div>
-
+                                <Button icon="pi pi-refresh" label="Refresh" text @click="refreshSessions" />
+                            </div>
+                            <div class="px-6 pb-6 pt-5">
                                 <div v-if="!activeSessions || activeSessions.length === 0" class="neu-inset rounded-2xl p-8 text-center text-slate-500">
                                     No one else is currently signed in.
                                 </div>
@@ -509,30 +610,26 @@ const onUpdateAccount = () => {
                                         </ul>
                                     </div>
                                 </div>
-                            </template>
-                        </Card>
+                            </div>
                         </div>
                     </TabPanel>
 
                     <!-- ============================== ACTIVITY LOG ============================== -->
                     <TabPanel v-if="has('activityLog')" value="activityLog">
-                        <div class="neu-card rounded-2xl p-6 transition-colors duration-300">
-                        <Card class="!rounded-2xl !bg-transparent !border-0 !shadow-none" :pt="{ body: { class: '!bg-transparent !p-0' } }">
-                            <template #content>
-                                <div class="flex items-start justify-between gap-4 mb-5">
+                        <div class="overflow-hidden rounded-2xl border transition-colors duration-300" :class="panelTone('amber').border">
+                            <div class="flex items-start justify-between gap-4 px-6 py-5" :class="panelTone('amber').band">
+                                <div class="flex items-start gap-3">
+                                    <span class="flex h-11 w-11 flex-none items-center justify-center rounded-xl text-lg text-white shadow-sm" :class="panelTone('amber').icon">
+                                        <i class="pi pi-history"></i>
+                                    </span>
                                     <div>
-                                        <h2 class="text-lg font-bold text-[#1E293B] mb-1">Activity Log</h2>
-                                        <p class="text-sm text-slate-500 max-w-2xl">
-                                            A record of important actions across Classly — who did what, and when.
-                                            Administrators and Registrars see every College; Dean, OIC, and
-                                            Assistant Dean see entries for their own College plus any
-                                            institution-wide/shared item (e.g. a GenEd subject or an
-                                            all-college room).
-                                        </p>
+                                        <h2 class="text-lg font-bold" :class="isDark ? 'text-white' : 'text-[#1E293B]'">Activity Log</h2>
+                                        <p class="mt-0.5 max-w-3xl text-sm" :class="isDark ? 'text-slate-300' : 'text-slate-600'">A record of important actions across Classly — who did what, and when. Administrators and Registrars see every College; Dean, OIC, and Assistant Dean see entries for their own College plus any institution-wide/shared item (e.g. a GenEd subject or an all-college room).</p>
                                     </div>
-                                    <Button icon="pi pi-refresh" label="Refresh" text @click="reloadActivityLog()" />
                                 </div>
-
+                                <Button icon="pi pi-refresh" label="Refresh" text @click="reloadActivityLog()" />
+                            </div>
+                            <div class="px-6 pb-6 pt-5">
                                 <!-- Filters -->
                                 <div class="neu-inset rounded-2xl p-4 mb-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3 items-end">
                                     <div class="flex flex-col gap-1">
@@ -617,19 +714,25 @@ const onUpdateAccount = () => {
                                         </div>
                                     </div>
                                 </div>
-                            </template>
-                        </Card>
+                            </div>
                         </div>
                     </TabPanel>
 
                     <!-- ============================== SYSTEM ============================== -->
                     <TabPanel v-if="has('system') && system" value="system">
-                        <div class="neu-card rounded-2xl p-6 transition-colors duration-300">
-                        <Card class="!rounded-2xl !bg-transparent !border-0 !shadow-none" :pt="{ body: { class: '!bg-transparent !p-0' } }">
-                            <template #content>
-                                <h2 class="text-lg font-bold text-[#1E293B] mb-1">System / Maintenance</h2>
-                                <p class="text-sm text-slate-500 mb-5">Visible to Administrators and Registrars only.</p>
-
+                        <div class="overflow-hidden rounded-2xl border transition-colors duration-300" :class="panelTone('indigo').border">
+                            <div class="flex items-start justify-between gap-4 px-6 py-5" :class="panelTone('indigo').band">
+                                <div class="flex items-start gap-3">
+                                    <span class="flex h-11 w-11 flex-none items-center justify-center rounded-xl text-lg text-white shadow-sm" :class="panelTone('indigo').icon">
+                                        <i class="pi pi-server"></i>
+                                    </span>
+                                    <div>
+                                        <h2 class="text-lg font-bold" :class="isDark ? 'text-white' : 'text-[#1E293B]'">System / Maintenance</h2>
+                                        <p class="mt-0.5 max-w-3xl text-sm" :class="isDark ? 'text-slate-300' : 'text-slate-600'">Visible to Administrators and Registrars only.</p>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="px-6 pb-6 pt-5">
                                 <div class="grid grid-cols-2 sm:grid-cols-3 gap-4 text-sm mb-6">
                                     <div><span class="text-slate-400 block">Application Version</span>{{ system.app_version }}</div>
                                     <div><span class="text-slate-400 block">Laravel Version</span>{{ system.laravel_version }}</div>
@@ -642,18 +745,24 @@ const onUpdateAccount = () => {
 
                                 <Button v-if="isAdministrator" label="Refresh Configuration Cache" icon="pi pi-refresh" severity="secondary" outlined :loading="refreshingCache" @click="refreshCache" />
                                 <p v-else class="text-xs text-slate-400">Only Administrators can refresh the configuration cache.</p>
-                            </template>
-                        </Card>
+                            </div>
                         </div>
                     </TabPanel>
 
                     <TabPanel value="account">
-                        <div class="neu-card rounded-2xl p-6 transition-colors duration-300 max-w-2xl">
-                        <Card class="!rounded-2xl !bg-transparent !border-0 !shadow-none" :pt="{ body: { class: '!bg-transparent !p-0' } }">
-                            <template #content>
-                                <h2 class="text-lg font-bold text-[#1E293B] mb-1">Manage Account</h2>
-                                <p class="text-sm text-slate-500 mb-5">Update your own profile and change your password.</p>
-
+                        <div class="overflow-hidden rounded-2xl border transition-colors duration-300 max-w-2xl" :class="panelTone('rose').border">
+                            <div class="flex items-start justify-between gap-4 px-6 py-5" :class="panelTone('rose').band">
+                                <div class="flex items-start gap-3">
+                                    <span class="flex h-11 w-11 flex-none items-center justify-center rounded-xl text-lg text-white shadow-sm" :class="panelTone('rose').icon">
+                                        <i class="pi pi-user"></i>
+                                    </span>
+                                    <div>
+                                        <h2 class="text-lg font-bold" :class="isDark ? 'text-white' : 'text-[#1E293B]'">Manage Account</h2>
+                                        <p class="mt-0.5 max-w-3xl text-sm" :class="isDark ? 'text-slate-300' : 'text-slate-600'">Update your own profile and change your password.</p>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="px-6 pb-6 pt-5">
                                 <form class="pt-1" autocomplete="off" @submit.prevent="onUpdateAccount">
                                     <div class="flex items-center gap-4 mb-6">
                                         <div class="relative shrink-0">
@@ -725,8 +834,7 @@ const onUpdateAccount = () => {
                                         <Button type="submit" label="Save Changes" icon="pi pi-check" :loading="accountForm.processing" />
                                     </div>
                                 </form>
-                            </template>
-                        </Card>
+                            </div>
                         </div>
                     </TabPanel>
                 </TabPanels>

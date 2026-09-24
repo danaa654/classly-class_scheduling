@@ -175,6 +175,40 @@ class AccessScope
     }
 
     /**
+     * True if, for THIS Section's College, $user may only touch shared
+     * (GenEd/Minor) Subjects — i.e. they have shared-category authority
+     * (Assistant Dean) but NOT Major authority over $sectionCollegeId.
+     * A dual-role user (Dean/OIC who is also Assistant Dean for their
+     * OWN College) is not restricted, since they hold both.
+     */
+    public static function isRestrictedToSharedCategoriesFor(?User $user, ?int $sectionCollegeId): bool
+    {
+        if (self::isUnrestricted($user)) {
+            return false;
+        }
+
+        return self::canManageByCategory($user, 'General Education', $sectionCollegeId)
+            && ! self::canManageByCategory($user, 'Major', $sectionCollegeId);
+    }
+
+    /**
+     * True if, for THIS Section's College, $user may only touch Major
+     * Subjects — i.e. they have Major authority (College-scoped
+     * Dean/OIC over their own College) but NOT shared-category
+     * (GenEd/Minor) authority. See isRestrictedToSharedCategoriesFor()
+     * for the mirror case.
+     */
+    public static function isRestrictedToMajorOnlyFor(?User $user, ?int $sectionCollegeId): bool
+    {
+        if (self::isUnrestricted($user)) {
+            return false;
+        }
+
+        return self::canManageByCategory($user, 'Major', $sectionCollegeId)
+            && ! self::canManageByCategory($user, 'General Education', $sectionCollegeId);
+    }
+
+    /**
      * Whether $user may manage the TEACHING QUALIFICATION link between a
      * Faculty member and a Subject of the given category — i.e. "is this
      * faculty allowed to teach this subject", not the subject's

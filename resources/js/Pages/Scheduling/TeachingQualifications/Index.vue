@@ -1,6 +1,6 @@
 <script setup>
 import { Head, usePage, router } from '@inertiajs/vue3';
-import { ref, computed, watch } from 'vue';
+import { ref, computed, watch, nextTick } from 'vue';
 import { useToast } from 'primevue/usetoast';
 import AppLayout from '@/Layouts/AppLayout.vue';
 import Card from 'primevue/card';
@@ -111,6 +111,29 @@ const fullName = (faculty) => {
 /* ------------------------------------------------------------------ */
 
 const selectedSubjectIds = ref([]);
+
+// Same fix as Faculty/Details.vue's identical Assign Subjects widget:
+// MultiSelect's filter input is teleported into an overlay and doesn't
+// exist yet when v-uppercase would normally attach, so this page's
+// search box was left typing in whatever case the user used instead
+// of matching the ALL-CAPS subject codes it searches.
+const subjectMultiSelect = ref(null);
+const onSubjectFilter = (event) => {
+    const upper = event.value.toUpperCase();
+    if (event.value === upper) return;
+
+    const inputEl = subjectMultiSelect.value?.$refs?.filterInput?.$el;
+    const start = inputEl?.selectionStart;
+    const end = inputEl?.selectionEnd;
+
+    subjectMultiSelect.value.filterValue = upper;
+
+    nextTick(() => {
+        if (inputEl && document.activeElement === inputEl) {
+            inputEl.setSelectionRange(start, end);
+        }
+    });
+};
 const saving = ref(false);
 
 // Reset the working selection whenever a different faculty is loaded.
@@ -277,6 +300,7 @@ const saveQualifications = () => {
                             <div class="pt-5">
                                 <label class="text-sm font-medium text-slate-700">Assign Subjects</label>
                                 <MultiSelect
+                                    ref="subjectMultiSelect"
                                     v-model="selectedSubjectIds"
                                     :options="subjects"
                                     optionLabel="subject_code"
@@ -286,6 +310,7 @@ const saveQualifications = () => {
                                     display="chip"
                                     placeholder="Select subjects this faculty member can teach"
                                     class="w-full mt-1"
+                                    @filter="onSubjectFilter"
                                 >
                                     <template #option="{ option }">
                                         <span class="font-medium">{{ option.subject_code }}</span>

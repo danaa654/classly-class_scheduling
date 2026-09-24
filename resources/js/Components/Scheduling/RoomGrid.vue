@@ -21,6 +21,7 @@ import Dialog from 'primevue/dialog';
 import Tag from 'primevue/tag';
 import Button from 'primevue/button';
 import ProgressSpinner from 'primevue/progressspinner';
+import LoadingSkeleton from '@/Components/LoadingSkeleton.vue';
 import { useToast } from 'primevue/usetoast';
 import Swal from 'sweetalert2';
 
@@ -73,10 +74,15 @@ const roomLabel = (room) => (room?.room_name || '').trim();
 // Left border + tint so Lecture vs Laboratory rooms are visually
 // distinguishable at a glance in the sidebar lists, without relying
 // on reading the small "Lecture · Cap 40" caption every time.
+// DARK MODE — the light "-50/40" tints turn into a washed-out grey slab
+// over a dark background (light colour at 40% opacity), which is what made
+// the room/subject cards' text unreadable. Dark mode uses a faint tint of
+// the accent colour instead.
 const roomTypeAccentClass = (room) => {
-    if (room?.room_type === 'Laboratory') return 'border-l-4 border-l-purple-400 bg-purple-50/40';
-    if (room?.room_type === 'Lecture') return 'border-l-4 border-l-sky-400 bg-sky-50/40';
-    return 'border-l-4 border-l-slate-200';
+    const dark = props.isDark;
+    if (room?.room_type === 'Laboratory') return dark ? 'border-l-4 border-l-purple-400 bg-purple-500/10' : 'border-l-4 border-l-purple-400 bg-purple-50/40';
+    if (room?.room_type === 'Lecture') return dark ? 'border-l-4 border-l-sky-400 bg-sky-500/10' : 'border-l-4 border-l-sky-400 bg-sky-50/40';
+    return dark ? 'border-l-4 border-l-slate-500' : 'border-l-4 border-l-slate-200';
 };
 
 const roomTypeDotClass = (room) => {
@@ -90,9 +96,10 @@ const roomTypeDotClass = (room) => {
 // convention as roomTypeAccentClass() above.
 const subjectCategoryAccentClass = (row) => {
     const category = row?.subject?.category;
-    if (category === 'Major') return 'border-l-4 border-l-emerald-400 bg-emerald-50/40';
-    if (category === 'Minor' || category === 'General Education') return 'border-l-4 border-l-amber-400 bg-amber-50/40';
-    return 'border-l-4 border-l-slate-200';
+    const dark = props.isDark;
+    if (category === 'Major') return dark ? 'border-l-4 border-l-emerald-400 bg-emerald-500/10' : 'border-l-4 border-l-emerald-400 bg-emerald-50/40';
+    if (category === 'Minor' || category === 'General Education') return dark ? 'border-l-4 border-l-amber-400 bg-amber-500/10' : 'border-l-4 border-l-amber-400 bg-amber-50/40';
+    return dark ? 'border-l-4 border-l-slate-500' : 'border-l-4 border-l-slate-200';
 };
 
 const subjectCategoryDotClass = (row) => {
@@ -423,6 +430,19 @@ const blockAuthState = (block) => {
 };
 
 const blockClass = (block) => {
+    // DARK MODE — the light pastel fills + dark-coloured text below are
+    // fine on the light theme but glare / lose contrast on the dark grid.
+    // "rg-dark-block" also lets the <style> block at the bottom recolour
+    // the small red/amber warning lines inside a block.
+    if (props.isDark) {
+        if (blockHasConflict(block)) return 'rg-dark-block bg-red-500/20 border-2 border-red-400 text-red-100 cursor-grab hover:border-red-300';
+        const darkState = blockAuthState(block);
+        if (darkState === 'current') return 'rg-dark-block bg-blue-500/20 border border-blue-400/60 text-blue-100 cursor-grab hover:border-blue-300';
+        if (darkState === 'authorized') return 'rg-dark-block bg-emerald-500/15 border border-emerald-400/60 border-dashed text-emerald-100 cursor-grab hover:border-emerald-300';
+        if (darkState === 'finalized') return 'rg-dark-block bg-amber-500/15 border border-amber-400/60 text-amber-100 cursor-not-allowed';
+        if (darkState === 'out_of_category') return 'rg-dark-block bg-slate-500/15 border border-slate-400/50 border-dotted text-slate-300 cursor-not-allowed';
+        return 'rg-dark-block bg-slate-500/20 border border-slate-400/50 text-slate-300 cursor-not-allowed';
+    }
     if (blockHasConflict(block)) return 'bg-red-50 border-2 border-red-500 text-red-700 cursor-grab hover:border-red-600';
     const state = blockAuthState(block);
     if (state === 'current') return 'bg-blue-50 border border-blue-200 text-blue-700 cursor-grab hover:border-blue-400';
@@ -2252,7 +2272,7 @@ const removeAssignment = async () => {
 <template>
     <div class="flex flex-col lg:flex-row gap-4">
         <!-- LEFT SIDEBAR: Room search / selection -->
-        <div class="w-full lg:w-40 shrink-0 space-y-3">
+        <div class="w-full lg:w-48 shrink-0 space-y-3">
             <div>
                 <span class="relative w-full block">
                     <i class="pi pi-search absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 text-xs"></i>
@@ -2261,42 +2281,42 @@ const removeAssignment = async () => {
             </div>
 
             <div class="neu-inset rounded-xl p-2.5">
-                <p class="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Recommended Rooms</p>
-                <div class="flex items-center gap-3 text-[9px] text-slate-400 mb-1.5">
+                <p class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Recommended Rooms</p>
+                <div class="flex items-center gap-3 text-[11px] text-slate-400 mb-1.5">
                     <span class="flex items-center gap-1"><span class="inline-block h-1.5 w-1.5 rounded-full bg-sky-400"></span>Lecture</span>
                     <span class="flex items-center gap-1"><span class="inline-block h-1.5 w-1.5 rounded-full bg-purple-400"></span>Laboratory</span>
                 </div>
-                <div v-if="roomsLoading" class="text-xs text-slate-400 py-1.5">Loading…</div>
+                <LoadingSkeleton v-if="roomsLoading" variant="rooms" :rows="6" />
                 <div v-else-if="recommendedRooms.length === 0" class="text-xs text-slate-400 py-1.5">No department rooms found.</div>
                 <ul v-else class="space-y-1">
                     <li
                         v-for="room in recommendedRooms"
                         :key="room.id"
-                        class="rounded-md px-2 py-1.5 cursor-pointer text-xs border transition-colors"
+                        class="rounded-md px-2 py-1.5 cursor-pointer text-sm border transition-colors"
                         :class="selectedRoom?.id === room.id
-                            ? 'bg-blue-50 border-blue-200 text-blue-700 font-medium'
-                            : `border-transparent hover:bg-slate-50 text-slate-700 ${roomTypeAccentClass(room)}`"
+                            ? (isDark ? 'bg-blue-500/25 border-blue-400/60 text-blue-100 font-medium' : 'bg-blue-50 border-blue-200 text-blue-700 font-medium')
+                            : `border-transparent ${isDark ? 'hover:bg-white/10 text-slate-100' : 'hover:bg-slate-50 text-slate-700'} ${roomTypeAccentClass(room)}`"
                         @click="selectRoom(room)"
                     >
                         <div class="font-medium truncate flex items-center gap-1.5">
                             <span class="inline-block h-1.5 w-1.5 rounded-full shrink-0" :class="roomTypeDotClass(room)"></span>
                             {{ roomLabel(room) }}
                         </div>
-                        <div class="text-[10px] text-slate-400">{{ room.room_type }} · Cap {{ room.capacity }}</div>
+                        <div class="text-xs" :class="isDark ? 'text-slate-300' : 'text-slate-400'">{{ room.room_type }} · Cap {{ room.capacity }}</div>
                     </li>
                 </ul>
             </div>
 
             <div v-if="roomSearch && searchResults.length" class="neu-inset rounded-xl p-2.5">
-                <p class="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Other / Shared Rooms</p>
+                <p class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Other / Shared Rooms</p>
                 <ul class="space-y-1">
                     <li
                         v-for="room in searchResults"
                         :key="room.id"
-                        class="rounded-md px-2 py-1.5 cursor-pointer text-xs border transition-colors"
+                        class="rounded-md px-2 py-1.5 cursor-pointer text-sm border transition-colors"
                         :class="selectedRoom?.id === room.id
-                            ? 'bg-blue-50 border-blue-200 text-blue-700 font-medium'
-                            : `border-transparent hover:bg-slate-50 text-slate-700 ${roomTypeAccentClass(room)}`"
+                            ? (isDark ? 'bg-blue-500/25 border-blue-400/60 text-blue-100 font-medium' : 'bg-blue-50 border-blue-200 text-blue-700 font-medium')
+                            : `border-transparent ${isDark ? 'hover:bg-white/10 text-slate-100' : 'hover:bg-slate-50 text-slate-700'} ${roomTypeAccentClass(room)}`"
                         @click="selectRoom(room)"
                     >
                         <div class="font-medium flex items-center gap-1.5 truncate">
@@ -2304,7 +2324,7 @@ const removeAssignment = async () => {
                             {{ roomLabel(room) }}
                             <Tag v-if="room.is_outside_department" value="Override" severity="warning" class="!text-[9px] !py-0" />
                         </div>
-                        <div class="text-[10px] text-slate-400">{{ room.department_name || room.college_name || room.room_type }} · Cap {{ room.capacity }}</div>
+                        <div class="text-xs" :class="isDark ? 'text-slate-300' : 'text-slate-400'">{{ room.department_name || room.college_name || room.room_type }} · Cap {{ room.capacity }}</div>
                     </li>
                 </ul>
             </div>
@@ -2341,7 +2361,11 @@ const removeAssignment = async () => {
                     </div>
                 </div>
 
-                <div class="overflow-x-auto border rounded-xl" :class="isDark ? 'border-white/10' : 'border-slate-300'">
+                <!-- First fetch after picking a room: nothing to show yet, so
+                     draw a timetable-shaped placeholder (after a 200ms delay).
+                     Later refreshes keep the grid on screen. -->
+                <LoadingSkeleton v-if="gridLoading && !selectedRoomDetail" variant="timetable" :rows="10" :columns="days.length" />
+                <div v-else class="overflow-x-auto border rounded-xl" :class="isDark ? 'border-white/10' : 'border-slate-300'">
                     <div
                         class="grid text-[13px]"
                         :style="{
@@ -2410,7 +2434,7 @@ const removeAssignment = async () => {
                                     </div>
                                     <div
                                         v-else-if="blockAt(day, rowIndex)"
-                                        class="absolute inset-0.5 rounded-md px-2 py-1 overflow-hidden text-[11px] leading-tight group"
+                                        class="absolute inset-0.5 rounded-md px-2 py-1 overflow-hidden text-[13px] leading-tight group"
                                         :class="blockClass(blockAt(day, rowIndex))"
                                         :draggable="blockAt(day, rowIndex).can_edit"
                                         :title="blockTitle(blockAt(day, rowIndex))"
@@ -2442,16 +2466,16 @@ const removeAssignment = async () => {
                                             v-else
                                             class="pi pi-arrows-alt absolute top-1 right-1 text-[9px] opacity-0 group-hover:opacity-60"
                                         ></i>
-                                        <div class="font-semibold truncate">{{ blockAt(day, rowIndex).subject_code }}</div>
-                                        <div class="truncate text-[10px] opacity-80">
+                                        <div class="font-semibold truncate text-sm">{{ blockAt(day, rowIndex).subject_code }}</div>
+                                        <div class="truncate text-xs opacity-90">
                                             <span v-if="blockAt(day, rowIndex).edp_code">EDP {{ blockAt(day, rowIndex).edp_code }} · </span>{{ blockAt(day, rowIndex).section_code }}
                                         </div>
-                                        <div v-if="blockAt(day, rowIndex).faculty_name" class="truncate text-[10px] opacity-75">{{ blockAt(day, rowIndex).faculty_name }}</div>
-                                        <div class="truncate text-[10px] font-medium opacity-90">{{ formatBlockTimeRange(blockAt(day, rowIndex)) }}</div>
-                                        <div v-if="blockHasConflict(blockAt(day, rowIndex))" class="text-[9px] font-semibold text-red-700 truncate">⚠ Conflict — needs rescheduling</div>
-                                        <div v-else-if="blockAt(day, rowIndex).faculty_mismatch" class="text-[9px] font-semibold text-amber-700 truncate">⚠ Faculty Mismatch</div>
-                                        <div v-else-if="blockAt(day, rowIndex).is_finalized" class="text-[9px] italic opacity-75 truncate">Finalized — locked</div>
-                                        <div v-else-if="!blockAt(day, rowIndex).can_edit" class="text-[9px] italic opacity-75 truncate">Outside your scheduling scope</div>
+                                        <div v-if="blockAt(day, rowIndex).faculty_name" class="truncate text-xs opacity-90">{{ blockAt(day, rowIndex).faculty_name }}</div>
+                                        <div class="truncate text-xs font-medium">{{ formatBlockTimeRange(blockAt(day, rowIndex)) }}</div>
+                                        <div v-if="blockHasConflict(blockAt(day, rowIndex))" class="text-[11px] font-semibold text-red-700 truncate">⚠ Conflict — needs rescheduling</div>
+                                        <div v-else-if="blockAt(day, rowIndex).faculty_mismatch" class="text-[11px] font-semibold text-amber-700 truncate">⚠ Faculty Mismatch</div>
+                                        <div v-else-if="blockAt(day, rowIndex).is_finalized" class="text-[11px] italic opacity-80 truncate">Finalized — locked</div>
+                                        <div v-else-if="!blockAt(day, rowIndex).can_edit" class="text-[11px] italic opacity-80 truncate">Outside your scheduling scope</div>
                                     </div>
                                     <!-- Ghost overlay ("x-ray") — this section is already busy at
                                          this Day/Time in a DIFFERENT room. Decorative only:
@@ -2462,13 +2486,13 @@ const removeAssignment = async () => {
                                          silently blocked by the overlay. -->
                                     <div
                                         v-else-if="ghostBlockAt(day, rowIndex)"
-                                        class="absolute inset-0.5 rounded-md px-2 py-1 overflow-hidden text-[11px] leading-tight pointer-events-none border-2 border-dashed border-violet-300 bg-[repeating-linear-gradient(45deg,rgba(139,92,246,0.08),rgba(139,92,246,0.08)_6px,rgba(139,92,246,0.14)_6px,rgba(139,92,246,0.14)_12px)] text-violet-700"
+                                        class="absolute inset-0.5 rounded-md px-2 py-1 overflow-hidden text-[13px] leading-tight pointer-events-none rg-ghost border-2 border-dashed border-violet-300 bg-[repeating-linear-gradient(45deg,rgba(139,92,246,0.08),rgba(139,92,246,0.08)_6px,rgba(139,92,246,0.14)_6px,rgba(139,92,246,0.14)_12px)] text-violet-700"
                                         :title="`${section.section_code} already has ${ghostBlockAt(day, rowIndex).subject_code} scheduled here (${ghostBlockAt(day, rowIndex).room_name ?? 'another room'}).`"
                                     >
                                         <i class="pi pi-eye absolute top-1 right-1 text-[9px] opacity-70"></i>
-                                        <div class="font-semibold truncate">{{ ghostBlockAt(day, rowIndex).subject_code }}</div>
-                                        <div class="truncate text-[10px] opacity-80">{{ ghostBlockAt(day, rowIndex).room_name ?? 'Another room' }}</div>
-                                        <div v-if="ghostBlockAt(day, rowIndex).faculty_name" class="truncate text-[10px] opacity-70">{{ ghostBlockAt(day, rowIndex).faculty_name }}</div>
+                                        <div class="font-semibold truncate text-sm">{{ ghostBlockAt(day, rowIndex).subject_code }}</div>
+                                        <div class="truncate text-xs opacity-90">{{ ghostBlockAt(day, rowIndex).room_name ?? 'Another room' }}</div>
+                                        <div v-if="ghostBlockAt(day, rowIndex).faculty_name" class="truncate text-xs opacity-90">{{ ghostBlockAt(day, rowIndex).faculty_name }}</div>
                                     </div>
                                 </div>
                             </template>
@@ -2496,9 +2520,9 @@ const removeAssignment = async () => {
         </div>
 
         <!-- RIGHT SIDEBAR: Draggable unscheduled subjects for this section -->
-        <div class="w-full lg:w-40 shrink-0 neu-inset rounded-xl p-2.5">
-            <p class="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Unscheduled Subjects</p>
-            <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[9px] text-slate-400 mb-1.5">
+        <div class="w-full lg:w-48 shrink-0 neu-inset rounded-xl p-2.5">
+            <p class="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Unscheduled Subjects</p>
+            <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-400 mb-1.5">
                 <span class="flex items-center gap-1"><span class="inline-block h-1.5 w-1.5 rounded-full bg-emerald-400"></span>Major</span>
                 <span class="flex items-center gap-1"><span class="inline-block h-1.5 w-1.5 rounded-full bg-amber-400"></span>Minor / GenEd</span>
             </div>
@@ -2510,19 +2534,22 @@ const removeAssignment = async () => {
                     v-for="row in unscheduledSubjects"
                     :key="row.id"
                     :draggable="!section.is_finalized && !isRowOutOfCategory(row)"
-                    class="rounded-md px-2 py-1.5 text-xs border border-slate-200"
+                    class="rounded-md px-2 py-1.5 text-sm border"
                     :class="[
-                        isRowOutOfCategory(row) ? 'opacity-50 cursor-not-allowed grayscale' : 'cursor-grab hover:border-blue-300 hover:bg-blue-50/40',
+                        isDark ? 'border-white/15 text-slate-100' : 'border-slate-200',
+                        isRowOutOfCategory(row)
+                            ? 'opacity-50 cursor-not-allowed grayscale'
+                            : (isDark ? 'cursor-grab hover:border-blue-400 hover:bg-blue-500/20' : 'cursor-grab hover:border-blue-300 hover:bg-blue-50/40'),
                         subjectCategoryAccentClass(row),
                     ]"
                     :title="isRowOutOfCategory(row) ? `${row.subject?.subject_code} is a Major subject — outside your Assistant Dean scheduling scope (GenEd/Minor only). The Dean/OIC schedules this.` : (section.is_finalized ? 'This section is finalized and can\'t be edited.' : (!selectedRoom ? 'Select a room first' : 'Drag onto the grid'))"
                     @dragstart="(section.is_finalized || isRowOutOfCategory(row)) ? null : onDragStartNew(row)"
                 >
-                    <div class="font-medium text-slate-700 truncate flex items-center gap-1.5">
+                    <div class="font-medium truncate flex items-center gap-1.5" :class="isDark ? 'text-slate-100' : 'text-slate-700'">
                         <span class="inline-block h-1.5 w-1.5 rounded-full shrink-0" :class="subjectCategoryDotClass(row)"></span>
                         {{ row.subject?.subject_code }}
                     </div>
-                    <div class="text-[10px] text-slate-400 truncate">{{ row.subject?.subject_title }}</div>
+                    <div class="text-xs truncate" :class="isDark ? 'text-slate-300' : 'text-slate-400'">{{ row.subject?.subject_title }}</div>
                 </li>
             </ul>
         </div>
@@ -2647,6 +2674,7 @@ const removeAssignment = async () => {
                     <Select
                         v-model="assignForm.facultyId"
                         :options="facultyOptions"
+                        overlayClass="faculty-filter-caps"
                         optionLabel="full_name"
                         optionValue="id"
                         optionGroupLabel="label"
@@ -2743,6 +2771,19 @@ const removeAssignment = async () => {
 </template>
 
 <style>
+/* Dark mode — Room Grid blocks. Warning lines inside a block use
+   light-theme reds/ambers that vanish on the dark fill, and the striped
+   "already scheduled in another room" ghost used dark violet text. */
+html.dark .rg-dark-block .text-red-700,
+html.dark .rg-dark-block .text-red-600 { color: #FCA5A5 !important; }
+html.dark .rg-dark-block .text-amber-700,
+html.dark .rg-dark-block .text-amber-600 { color: #FCD34D !important; }
+html.dark .rg-ghost {
+    color: #DDD6FE !important;
+    border-color: rgba(167, 139, 250, 0.75) !important;
+    background: repeating-linear-gradient(45deg, rgba(139, 92, 246, 0.22), rgba(139, 92, 246, 0.22) 6px, rgba(139, 92, 246, 0.32) 6px, rgba(139, 92, 246, 0.32) 12px) !important;
+}
+
 /* Swal2's default z-index (1060) can sit underneath PrimeVue's
    Dialog portal, which assigns its own z-index dynamically and is
    often higher — making confirm dialogs like "Weekly Hours Mismatch"

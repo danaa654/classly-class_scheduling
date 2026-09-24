@@ -91,9 +91,14 @@ class FacultyScheduleMail extends Mailable
             'term' => $term,
             'rows' => $this->record->schedule_snapshot ?? [],
             'schoolName' => $schoolName,
-            // Always the bundled public/logo.png, embedded as a base64
-            // data URI (DomPDF can't reliably fetch a URL, and needs a
-            // static asset it can process through GD either way).
+            // The school's own uploaded logo (Settings > General),
+            // embedded as a base64 data URI — DomPDF can't reliably
+            // fetch a storage URL at render time, so the file is read
+            // straight off disk instead. Falls back to Classly's own
+            // bundled public/logo.png only when the school hasn't
+            // uploaded one, so the emailed PDF matches the printed
+            // report's letterhead instead of always showing Classly's
+            // icon in the school's place.
             'schoolLogoDataUri' => $this->logoDataUri(),
             'deans' => $signoff->deansForColleges($sectionSubjects),
             'approvers' => $signoff->approvers(),
@@ -108,14 +113,37 @@ class FacultyScheduleMail extends Mailable
     }
 
     /**
-     * Embeds public/logo.png as a base64 data URI. Note: DomPDF still
-     * needs the PHP GD extension enabled to process ANY embedded
-     * raster image (PNG/JPG) at render time — this is unavoidable
-     * regardless of which image file is used, so GD must be enabled
-     * in php.ini for the PDF attachment to render at all.
+     * Embeds the school's uploaded logo (Settings > General) as a
+     * base64 data URI, matching what the print/report letterhead
+     * shows (see ReportsController's 'schoolLogoUrl'). Falls back to
+     * the bundled public/logo.png (Classly's own icon) only if the
+     * school hasn't uploaded a logo yet, or the stored file is
+     * missing. Note: DomPDF still needs the PHP GD extension enabled
+     * to process ANY embedded raster image (PNG/JPG) at render time —
+     * this is unavoidable regardless of which image file is used, so
+     * GD must be enabled in php.ini for the PDF attachment to render
+     * at all.
      */
     private function logoDataUri(): ?string
     {
+        $logoPath = app(SettingsService::class)->group('general')['general.school_logo_path'] ?? null;
+
+        if ($logoPath) {
+            // general.school_logo_path is stored as a Storage::url()
+            // value (e.g. "/storage/school-logo/xxxx.png") — resolve
+            // it back to the underlying disk path so the file can be
+            // read directly, rather than trying to have DomPDF fetch
+            // the URL over HTTP.
+            $relative = ltrim(preg_replace('#^/storage/#', '', parse_url($logoPath, PHP_URL_PATH) ?? $logoPath), '/');
+
+            if (\Illuminate\Support\Facades\Storage::disk('public')->exists($relative)) {
+                $contents = \Illuminate\Support\Facades\Storage::disk('public')->get($relative);
+                $mime = \Illuminate\Support\Facades\Storage::disk('public')->mimeType($relative) ?: 'image/png';
+
+                return "data:{$mime};base64,".base64_encode($contents);
+            }
+        }
+
         $path = public_path('logo.png');
 
         if (! is_file($path)) {

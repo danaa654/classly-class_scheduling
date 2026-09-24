@@ -6,6 +6,7 @@ use App\Models\AcademicTerm;
 use App\Models\Section;
 use App\Services\ReportsService;
 use App\Services\SettingsService;
+use App\Support\ScheduleCache;
 use App\Support\ViewingTerm;
 use Illuminate\Http\Request;
 use Illuminate\View\View;
@@ -32,15 +33,23 @@ class ReportsController extends Controller
 
         $reportType = (string) $request->query('report_type', '');
 
+        // PERFORMANCE — report queries are heavy and pure functions of
+        // (filters, user, viewing term, DB state). Cached per user +
+        // term; ScheduleCache rotates on any scheduling data write.
+        $cacheBase = [
+            'user' => $request->user()?->getAuthIdentifier(),
+            'term' => ViewingTerm::resolve($request)?->id,
+        ];
+
         return Inertia::render('Reports/Index', [
-            'filterOptions' => $this->reports->filterOptions(),
+            'filterOptions' => ScheduleCache::remember('reports.filterOptions', $cacheBase, 300, fn () => $this->reports->filterOptions()),
             'filters' => array_merge($filters, [
                 'term' => $this->resolveTermValue($filters['academic_year'], $filters['semester']),
             ]),
             'termOptions' => $this->termFilterOptions(),
             'reportType' => $reportType,
-            'summary' => $this->reports->dashboardSummary($filters['academic_year'] ?: null, $filters['semester'] ?: null),
-            'report' => $reportType !== '' ? $this->reports->generate($reportType, $cleanFilters) : null,
+            'summary' => ScheduleCache::remember('reports.summary', $cacheBase + ['f' => [$filters['academic_year'], $filters['semester']]], 300, fn () => $this->reports->dashboardSummary($filters['academic_year'] ?: null, $filters['semester'] ?: null)),
+            'report' => $reportType !== '' ? ScheduleCache::remember('reports.generate', $cacheBase + ['type' => $reportType, 'f' => $cleanFilters], 300, fn () => $this->reports->generate($reportType, $cleanFilters)) : null,
             // Grid view (Reports/Index.vue's Schedule by Room / Schedule by
             // Faculty toggle) lays classes out against the same 30-min-row
             // + fixed-lunch-break scheduling window RoomGrid.vue already

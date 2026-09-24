@@ -158,7 +158,7 @@ Route::middleware('auth')->group(function () {
 
     Route::put('/scheduling/teaching-qualifications/{faculty}', [TeachingQualificationController::class, 'update'])->name('scheduling.teaching-qualifications.update');
     Route::get('/scheduling/rooms', [RoomController::class, 'index'])->name('scheduling.rooms');
-    Route::get('/scheduling/rooms/{room}/schedule', [RoomController::class, 'schedule'])->name('scheduling.rooms.schedule');
+    Route::get('/scheduling/rooms/{room}/schedule', [RoomController::class, 'schedule'])->name('scheduling.rooms.schedule')->middleware('cache.json:120');
     // Bulk Import — Room Master (mirrors Subject Library's Bulk
     // Import). Placed above the {room} routes so "import" is never
     // mistaken for a room identifier.
@@ -171,8 +171,8 @@ Route::middleware('auth')->group(function () {
     // Room Recommendation — "Recommended Subjects" on the Room Details
     // page (source of truth for room-subject soft preferences, read
     // by RecommendationService::recommendRooms() as a scoring bonus).
-    Route::get('/scheduling/rooms/{room}/recommendations', [RoomRecommendationController::class, 'index'])->name('scheduling.rooms.recommendations');
-    Route::get('/scheduling/rooms/{room}/recommendations/subjects', [RoomRecommendationController::class, 'searchableSubjects'])->name('scheduling.rooms.recommendations.subjects');
+    Route::get('/scheduling/rooms/{room}/recommendations', [RoomRecommendationController::class, 'index'])->name('scheduling.rooms.recommendations')->middleware('cache.json:120');
+    Route::get('/scheduling/rooms/{room}/recommendations/subjects', [RoomRecommendationController::class, 'searchableSubjects'])->name('scheduling.rooms.recommendations.subjects')->middleware('cache.json:120');
     Route::post('/scheduling/rooms/{room}/recommendations', [RoomRecommendationController::class, 'store'])->name('scheduling.rooms.recommendations.store');
     Route::delete('/scheduling/rooms/{room}/recommendations/{recommendation}', [RoomRecommendationController::class, 'destroy'])->name('scheduling.rooms.recommendations.destroy');
     Route::get('/scheduling/sections', [SectionController::class, 'index'])->name('scheduling.sections');
@@ -201,7 +201,7 @@ Route::middleware('auth')->group(function () {
     // SectionSubjectController::scheduleVersion().
     Route::get('/scheduling/section-subjects/{section}/version', [SectionSubjectController::class, 'scheduleVersion'])->name('scheduling.section-subjects.version');
     Route::post('/scheduling/section-subjects/{section}/generate-curriculum', [SectionSubjectController::class, 'generateCurriculumSubjects'])->name('scheduling.section-subjects.generate-curriculum');
-    Route::get('/scheduling/section-subjects/{section}/curriculum-preview', [SectionSubjectController::class, 'curriculumPreview'])->name('scheduling.section-subjects.curriculum-preview');
+    Route::get('/scheduling/section-subjects/{section}/curriculum-preview', [SectionSubjectController::class, 'curriculumPreview'])->name('scheduling.section-subjects.curriculum-preview')->middleware('cache.json:120');
     Route::post('/scheduling/section-subjects/{section}', [SectionSubjectController::class, 'store'])->name('scheduling.section-subjects.store');
     Route::delete('/scheduling/section-subjects/{section}/{subject}', [SectionSubjectController::class, 'destroy'])->name('scheduling.section-subjects.destroy');
     // Inline scheduling-cell auto-save (Faculty/Room/Days/Time/Capacity) — the
@@ -217,10 +217,10 @@ Route::middleware('auth')->group(function () {
     Route::patch('/scheduling/room-grid/section-subjects/{subject}/move', [SectionSubjectController::class, 'moveRoomGridAssignment'])->name('scheduling.room-grid.move');
     // Smart Assignment Recommendation Engine (Prompt 8.6) — ranked
     // Faculty/Room/Time suggestions for one row, never auto-assigns.
-    Route::get('/scheduling/section-subjects/{section}/{subject}/recommend', [SectionSubjectController::class, 'recommend'])->name('scheduling.section-subjects.recommend');
-    Route::get('/scheduling/section-subjects/{section}/{subject}/faculty-options', [SectionSubjectController::class, 'facultyOptions'])->name('scheduling.section-subjects.faculty-options');
+    Route::get('/scheduling/section-subjects/{section}/{subject}/recommend', [SectionSubjectController::class, 'recommend'])->name('scheduling.section-subjects.recommend')->middleware('cache.json:120');
+    Route::get('/scheduling/section-subjects/{section}/{subject}/faculty-options', [SectionSubjectController::class, 'facultyOptions'])->name('scheduling.section-subjects.faculty-options')->middleware('cache.json:120');
     Route::post('/scheduling/section-subjects/{section}/{subject}/faculty-override', [SectionSubjectController::class, 'overrideFaculty'])->name('scheduling.section-subjects.faculty-override');
-    Route::get('/scheduling/section-subjects/{section}/{subject}/room-options', [SectionSubjectController::class, 'roomOptions'])->name('scheduling.section-subjects.room-options');
+    Route::get('/scheduling/section-subjects/{section}/{subject}/room-options', [SectionSubjectController::class, 'roomOptions'])->name('scheduling.section-subjects.room-options')->middleware('cache.json:120');
     Route::post('/scheduling/section-subjects/{section}/{subject}/room-override', [SectionSubjectController::class, 'overrideRoom'])->name('scheduling.section-subjects.room-override');
     // SPLIT-DELIVERY SCHEDULING — turn one subject's schedule row into
     // a Face-to-Face row + an Online row (split), or collapse a
@@ -231,7 +231,7 @@ Route::middleware('auth')->group(function () {
     // every already-booked Start/End Time window, so the Start/End
     // Time dropdowns can grey out slots that would conflict before
     // the Registrar even picks one.
-    Route::get('/scheduling/section-subjects/{section}/{subject}/busy-times', [SectionSubjectController::class, 'busyTimes'])->name('scheduling.section-subjects.busy-times');
+    Route::get('/scheduling/section-subjects/{section}/{subject}/busy-times', [SectionSubjectController::class, 'busyTimes'])->name('scheduling.section-subjects.busy-times')->middleware('cache.json:120');
 
     // Room Scheduler (Room-Centric Time Grid) — read-only for now; the
     // drag/drop write path is a later slice of this feature. Nested
@@ -239,20 +239,20 @@ Route::middleware('auth')->group(function () {
     // middleware (see SectionSubjectController::middleware()) applies
     // the same as every other action here, even though the returned
     // room schedule itself spans every Section using that Room.
-    Route::get('/scheduling/section-subjects/{section}/rooms', [SectionSubjectController::class, 'roomOptionsForGrid'])->name('scheduling.section-subjects.rooms');
-    Route::get('/scheduling/section-subjects/{section}/rooms/{room}/schedule', [SectionSubjectController::class, 'roomSchedule'])->name('scheduling.section-subjects.room-schedule');
+    Route::get('/scheduling/section-subjects/{section}/rooms', [SectionSubjectController::class, 'roomOptionsForGrid'])->name('scheduling.section-subjects.rooms')->middleware('cache.json:120');
+    Route::get('/scheduling/section-subjects/{section}/rooms/{room}/schedule', [SectionSubjectController::class, 'roomSchedule'])->name('scheduling.section-subjects.room-schedule')->middleware('cache.json:120');
     Route::post('/scheduling/section-subjects/{section}/{subject}/time-override', [SectionSubjectController::class, 'overrideTime'])->name('scheduling.section-subjects.time-override');
     // Smart Day & Time Recommendation modal — ranked, conflict-free
     // alternatives when a manually-picked Day/Time fails validation.
     // Reuses RecommendationService::recommendTimes() (the exact same
     // engine Auto Generate itself uses), never a separate simplified
     // algorithm — see SectionSubjectController::timeRecommendations().
-    Route::get('/scheduling/section-subjects/{section}/{subject}/time-recommendations', [SectionSubjectController::class, 'timeRecommendations'])->name('scheduling.section-subjects.time-recommendations');
+    Route::get('/scheduling/section-subjects/{section}/{subject}/time-recommendations', [SectionSubjectController::class, 'timeRecommendations'])->name('scheduling.section-subjects.time-recommendations')->middleware('cache.json:120');
 
     // INTELLIGENT IRREGULAR SECTION SCHEDULING — merge recommendation
     // modal + Administrator override actions (see IrregularSectionMergeService).
-    Route::get('/scheduling/section-subjects/{section}/{subject}/merge-recommendation', [SectionSubjectController::class, 'mergeRecommendation'])->name('scheduling.section-subjects.merge-recommendation');
-    Route::get('/scheduling/section-subjects/{section}/{subject}/reverse-merge-recommendation', [SectionSubjectController::class, 'reverseMergeRecommendation'])->name('scheduling.section-subjects.reverse-merge-recommendation');
+    Route::get('/scheduling/section-subjects/{section}/{subject}/merge-recommendation', [SectionSubjectController::class, 'mergeRecommendation'])->name('scheduling.section-subjects.merge-recommendation')->middleware('cache.json:120');
+    Route::get('/scheduling/section-subjects/{section}/{subject}/reverse-merge-recommendation', [SectionSubjectController::class, 'reverseMergeRecommendation'])->name('scheduling.section-subjects.reverse-merge-recommendation')->middleware('cache.json:120');
     Route::post('/scheduling/section-subjects/{section}/{subject}/merge', [SectionSubjectController::class, 'applyMerge'])->name('scheduling.section-subjects.merge');
     Route::post('/scheduling/section-subjects/{section}/{subject}/schedule-independently', [SectionSubjectController::class, 'scheduleIndependently'])->name('scheduling.section-subjects.schedule-independently');
 
@@ -260,6 +260,8 @@ Route::middleware('auth')->group(function () {
     Route::post('/scheduling/section-subjects/{section}/auto-generate', [SectionSubjectController::class, 'autoGenerate'])->name('scheduling.section-subjects.auto-generate');
     Route::post('/scheduling/section-subjects/{section}/auto-generate/regenerate', [SectionSubjectController::class, 'regenerateSchedule'])->name('scheduling.section-subjects.auto-generate.regenerate');
     Route::post('/scheduling/section-subjects/{section}/auto-generate/clear', [SectionSubjectController::class, 'clearAutoGenerated'])->name('scheduling.section-subjects.auto-generate.clear');
+    // Remove ONE subject from the pending auto schedule (X on a review-panel card).
+    Route::post('/scheduling/section-subjects/{section}/{subject}/auto-generate/clear', [SectionSubjectController::class, 'clearAutoGeneratedOne'])->name('scheduling.section-subjects.auto-generate.clear-one');
     // "Save Schedule" batch save — the Registrar edits Faculty/Room/Days/
     // Start/End Time across multiple rows locally in the table, then
     // submits every row at once here; all rows save in a single

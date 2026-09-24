@@ -127,13 +127,78 @@ class ReportsService
         $sections = Section::query()
             ->when($academicYear, fn ($q, $v) => $q->where('academic_year', $v))
             ->when($semester, fn ($q, $v) => $q->where('semester', $v))
-            ->get(['id', 'section_type', 'major_id']);
+            ->with('major.department.college')
+            ->get(['id', 'section_code', 'section_type', 'major_id']);
 
         $sectionIds = $sections->pluck('id');
+        $sectionsById = $sections->keyBy('id');
 
-        $sectionSubjects = SectionSubject::query()->whereIn('section_id', $sectionIds)->get();
-        $scheduled = $sectionSubjects->where('status', 'Scheduled')->count();
-        $total = $sectionSubjects->count();
+        $sectionSubjects = SectionSubject::query()->whereIn('section_id', $sectionIds)->with('subject:id,category')->get();
+
+        // Distinct-SUBJECT grouping — same rule the Sections list page
+        // (Section::withSubjectProgressCounts()) and the Faculty
+        // Workload tab (FacultyWorkloadService's "every row Scheduled"
+        // group status) already apply: a Face-to-Face/Online split (or
+        // a Lecture/Lab pair) is ONE subject offering sharing one
+        // EDP Code, not two. Counting raw section_subjects rows here
+        // instead inflated e.g. a 9-subject section to "13 Scheduled"
+        // whenever 4 of its subjects were split — disagreeing with the
+        // Sections page's "9/9 Fully Scheduled" for the exact same
+        // section. A subject-group only counts as Scheduled once EVERY
+        // one of its component rows is individually Scheduled.
+        $subjectGroups = $sectionSubjects->groupBy(fn (SectionSubject $ss) => $ss->section_id.'-'.$ss->subject_id);
+        $groupIsScheduled = fn ($group) => $group->every(fn (SectionSubject $ss) => $ss->status === 'Scheduled');
+
+        $scheduled = $subjectGroups->filter($groupIsScheduled)->count();
+        $total = $subjectGroups->count();
+
+        $collegeLabel = fn (?\App\Models\Major $major): string => $major?->department?->college?->short_name
+            ?: $major?->department?->college?->code
+            ?: 'Unassigned';
+        $majorLabel = fn (?\App\Models\Major $major): string => $major?->code ?: $major?->short_name ?: $major?->name ?: 'Unassigned';
+
+        // Sections grouped by Major, each tagged with its College — the
+        // "CCS / BSIT — 6" breakdown behind the Sections card.
+        $sectionsByMajor = $sections->groupBy('major_id')
+            ->map(function ($group) use ($collegeLabel, $majorLabel) {
+                $major = $group->first()->major;
+
+                return [
+                    'college' => $collegeLabel($major),
+                    'major' => $majorLabel($major),
+                    'count' => $group->count(),
+                ];
+            })
+            ->sortBy([['college', 'asc'], ['major', 'asc']])
+            ->values();
+
+        // Every Major offered, College-labeled — the list behind the
+        // Programs card. Not scoped to the selected term: "Programs"
+        // reads as the school's program catalog, not a per-term count.
+        $programs = \App\Models\Major::query()
+            ->with('department.college')
+            ->get()
+            ->map(fn (\App\Models\Major $m) => [
+                'college' => $collegeLabel($m),
+                'code' => $majorLabel($m),
+                'name' => $m->name,
+            ])
+            ->sortBy([['college', 'asc'], ['code', 'asc']])
+            ->values();
+
+        // Per-section scheduled/unscheduled tallies, for the Scheduled
+        // and Unscheduled cards — only sections with a nonzero count on
+        // that side are worth listing. Grouped by distinct subject, not
+        // raw rows, for the same reason as $scheduled/$total above.
+        $bySection = fn (bool $isScheduled) => $subjectGroups
+            ->filter(fn ($group) => $groupIsScheduled($group) === $isScheduled)
+            ->groupBy(fn ($group) => $group->first()->section_id)
+            ->map(fn ($sectionGroups, $sectionId) => [
+                'section' => $sectionsById[$sectionId]->section_code ?? '—',
+                'count' => $sectionGroups->count(),
+            ])
+            ->sortByDesc('count')
+            ->values();
 
         return [
             'total_programs' => \App\Models\Major::query()->count(),
@@ -146,6 +211,20 @@ class ReportsService
             'total_faculty' => Faculty::query()->count(),
             'total_rooms' => Room::query()->count(),
             'completion_percent' => $total > 0 ? round(($scheduled / $total) * 100) : 0,
+            'breakdowns' => [
+                'programs' => $programs,
+                'sections' => $sectionsByMajor,
+                'regular' => $sections->where('section_type', 'Regular')->pluck('section_code')->sort()->values(),
+                'irregular' => $sections->where('section_type', 'Irregular')->pluck('section_code')->sort()->values(),
+                'subjects' => $subjectGroups->groupBy(fn ($group) => $group->first()->subject?->category ?: 'Uncategorized')
+                    ->map(fn ($group, $category) => ['category' => $category, 'count' => $group->count()])
+                    ->sortByDesc('count')
+                    ->values(),
+                'scheduled' => $bySection(true),
+                'unscheduled' => $bySection(false),
+                'faculty' => Faculty::query()->orderBy('last_name')->get()->map(fn (Faculty $f) => $f->full_name)->values(),
+                'rooms' => Room::query()->orderBy('room_code')->get()->map(fn (Room $r) => $r->room_code.($r->room_name ? " — {$r->room_name}" : ''))->values(),
+            ],
         ];
     }
 
@@ -271,6 +350,35 @@ class ReportsService
         return $this->table('Master Schedule', $rows);
     }
 
+    /**
+     * Flattens a group's per-component Schedule lines (Face-to-Face +
+     * Online, etc.) into single display strings for the flat
+     * Room/Day/Start/End columns used by the Table view and CSV
+     * export — so a split class's Online session is never silently
+     * dropped just because it shares an EDP Code with its
+     * Face-to-Face half. A never-split class (one Schedule line)
+     * renders exactly as before. The nested 'Schedules' array (used
+     * by the Grid view and the dedicated print layouts) is untouched
+     * by this — those already show every component correctly.
+     */
+    private function combineScheduleColumns(Collection $schedules): array
+    {
+        if ($schedules->count() <= 1) {
+            $only = $schedules->first() ?? ['Room' => null, 'Day' => null, 'Start' => null, 'End' => null];
+
+            return $only;
+        }
+
+        return [
+            'Room' => $schedules->pluck('Room')->filter()->implode(' / '),
+            'Day' => $schedules->map(fn ($s) => $s['Day'] && $s['Start']
+                ? "{$s['Day']} {$s['Start']}–{$s['End']}"
+                : $s['Day'])->filter()->implode(' / '),
+            'Start' => $schedules->pluck('Start')->filter()->implode(' / '),
+            'End' => $schedules->pluck('End')->filter()->implode(' / '),
+        ];
+    }
+
     private function scheduleBySection(array $filters): array
     {
         // SPLIT-DELIVERY / MULTI-SESSION SCHEDULING — same "one class,
@@ -309,7 +417,7 @@ class ReportsService
                     ])
                     ->values();
 
-                $first = $schedules->first() ?? ['Room' => null, 'Day' => null, 'Start' => null, 'End' => null];
+                $combined = $this->combineScheduleColumns($schedules);
 
                 return [
                     'EDP Code' => $primary->edp_code,
@@ -317,15 +425,18 @@ class ReportsService
                     'Subject Code' => $primary->subject?->subject_code,
                     'Subject' => $primary->subject?->subject_title,
                     'Faculty' => $primary->faculty?->full_name,
-                    // Kept flat (first Schedule line only) for the
-                    // generic multi-column dump used when no specific
-                    // section is picked — see 'Schedules' below for
-                    // the full per-EDP-Code breakdown the dedicated
-                    // single/multi-section print layouts use instead.
-                    'Room' => $first['Room'],
-                    'Day' => $first['Day'],
-                    'Start' => $first['Start'],
-                    'End' => $first['End'],
+                    // For a split class (Face-to-Face + Online), this is
+                    // BOTH sessions combined (e.g. "306 / Online") — not
+                    // just the Face-to-Face half — so Table view and CSV
+                    // export never hide the Online component just
+                    // because it shares this row's EDP Code. See
+                    // 'Schedules' below for the full per-component
+                    // breakdown the Grid view and dedicated print
+                    // layouts use instead.
+                    'Room' => $combined['Room'],
+                    'Day' => $combined['Day'],
+                    'Start' => $combined['Start'],
+                    'End' => $combined['End'],
                     'Type' => $primary->section?->section_type,
                     'Schedules' => $schedules->all(),
                 ];
@@ -492,7 +603,7 @@ class ReportsService
                     ])
                     ->values();
 
-                $first = $schedules->first() ?? ['Room' => null, 'Day' => null, 'Start' => null, 'End' => null];
+                $combined = $this->combineScheduleColumns($schedules);
 
                 return [
                     'EDP Code' => $primary->edp_code,
@@ -503,15 +614,18 @@ class ReportsService
                     // " & " (e.g. "BSIT-4A & BSIT-4A-IRREG") — same format
                     // as the Workload tab's Assigned Subjects list.
                     'Section' => $sectionCodes->implode(' & '),
-                    // Kept flat (first Schedule line only) for the
-                    // generic multi-column dump used when no specific
-                    // faculty is picked — see 'Schedules' below for the
-                    // full per-EDP-Code breakdown the dedicated
-                    // single/multi-faculty print layouts use instead.
-                    'Room' => $first['Room'],
-                    'Day' => $first['Day'],
-                    'Start' => $first['Start'],
-                    'End' => $first['End'],
+                    // For a split class (Face-to-Face + Online), this is
+                    // BOTH sessions combined (e.g. "306 / Online") — not
+                    // just the Face-to-Face half — so Table view and CSV
+                    // export never hide the Online component just
+                    // because it shares this row's EDP Code. See
+                    // 'Schedules' below for the full per-component
+                    // breakdown the Grid view and dedicated print
+                    // layouts use instead.
+                    'Room' => $combined['Room'],
+                    'Day' => $combined['Day'],
+                    'Start' => $combined['Start'],
+                    'End' => $combined['End'],
                     'Units' => $primary->subject?->units,
                     'Schedules' => $schedules->all(),
                 ];

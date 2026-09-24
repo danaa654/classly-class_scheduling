@@ -19,6 +19,7 @@ import Checkbox from 'primevue/checkbox';
 import FloatLabel from 'primevue/floatlabel';
 import Toast from 'primevue/toast';
 import InfoPopover from '@/Components/InfoPopover.vue';
+import LoadingSkeleton from '@/Components/LoadingSkeleton.vue';
 import { useTheme } from '@/composables/useTheme';
 
 const { theme } = useTheme();
@@ -508,7 +509,9 @@ const onRestore = (curriculum) => {
                     </div>
 
                     <!-- Curriculums Table -->
+                    <LoadingSkeleton v-if="loading && !curriculums.data.length" variant="table" :rows="8" :columns="5" />
                     <DataTable
+                        v-else
                         :value="curriculums.data"
                         :loading="loading"
                         dataKey="id"

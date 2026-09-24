@@ -674,21 +674,198 @@ const activeFiltersLabel = computed(() => {
     return parts.join(' · ');
 });
 
-// Dashboard Summary tiles — icon + accent per metric, same neu-icon-well
-// pattern used on the Scheduling Dashboard's stat cards.
+// Dashboard Summary — vivid, clickable stat cards: a gradient icon
+// badge, a color-coded top edge, a faint oversized watermark icon, and
+// a hover glow tinted to match. Clicking a card expands its own
+// breakdown in place (ReportsService::dashboardSummary()'s
+// `breakdowns` key) instead of navigating away — e.g. Sections opens
+// into Regular's per-Major tally, grouped by College.
 const summaryCards = computed(() => [
-    { label: 'Programs', value: props.summary.total_programs, icon: 'pi-sitemap', color: isDark.value ? '#5B9CFF' : '#2563EB', glow: isDark.value ? 'rgba(91, 156, 255, 0.3)' : 'rgba(37, 99, 235, 0.25)' },
-    { label: 'Sections', value: props.summary.total_sections, icon: 'pi-th-large', color: isDark.value ? '#5B9CFF' : '#2563EB', glow: isDark.value ? 'rgba(91, 156, 255, 0.3)' : 'rgba(37, 99, 235, 0.25)' },
-    { label: 'Regular', value: props.summary.regular_sections, icon: 'pi-check-circle', color: isDark.value ? '#34D399' : '#059669', glow: isDark.value ? 'rgba(52, 211, 153, 0.3)' : 'rgba(5, 150, 105, 0.25)' },
-    { label: 'Irregular', value: props.summary.irregular_sections, icon: 'pi-exclamation-circle', color: isDark.value ? '#FBBF24' : '#D97706', glow: isDark.value ? 'rgba(251, 191, 36, 0.3)' : 'rgba(217, 119, 6, 0.25)' },
-    { label: 'Subjects', value: props.summary.total_subjects, icon: 'pi-book', color: isDark.value ? '#C4B5FD' : '#7C3AED', glow: isDark.value ? 'rgba(196, 181, 253, 0.3)' : 'rgba(124, 58, 237, 0.25)' },
-    { label: 'Scheduled', value: props.summary.scheduled_subjects, icon: 'pi-calendar-plus', color: isDark.value ? '#34D399' : '#059669', glow: isDark.value ? 'rgba(52, 211, 153, 0.3)' : 'rgba(5, 150, 105, 0.25)' },
-    { label: 'Unscheduled', value: props.summary.unscheduled_subjects, icon: 'pi-calendar-times', color: isDark.value ? '#FCA5A5' : '#DC2626', glow: isDark.value ? 'rgba(252, 165, 165, 0.3)' : 'rgba(220, 38, 38, 0.2)' },
-    { label: 'Faculty', value: props.summary.total_faculty, icon: 'pi-users', color: isDark.value ? '#C4B5FD' : '#7C3AED', glow: isDark.value ? 'rgba(196, 181, 253, 0.3)' : 'rgba(124, 58, 237, 0.25)' },
-    { label: 'Rooms', value: props.summary.total_rooms, icon: 'pi-building', color: isDark.value ? '#C4B5FD' : '#7C3AED', glow: isDark.value ? 'rgba(196, 181, 253, 0.3)' : 'rgba(124, 58, 237, 0.25)' },
-    { label: 'Scheduling Completion', value: `${props.summary.completion_percent}%`, icon: 'pi-percentage', color: isDark.value ? '#34D399' : '#059669', glow: isDark.value ? 'rgba(52, 211, 153, 0.3)' : 'rgba(5, 150, 105, 0.25)' },
+    { key: 'programs', label: 'Programs', value: props.summary.total_programs, icon: 'pi-sitemap', bar: '#2563EB', badge: 'linear-gradient(135deg, #60A5FA, #2563EB)', glow: 'rgba(37, 99, 235, 0.35)' },
+    { key: 'sections', label: 'Sections', value: props.summary.total_sections, icon: 'pi-th-large', bar: '#0EA5E9', badge: 'linear-gradient(135deg, #38BDF8, #0284C7)', glow: 'rgba(14, 165, 233, 0.35)' },
+    { key: 'regular', label: 'Regular', value: props.summary.regular_sections, icon: 'pi-check-circle', bar: '#10B981', badge: 'linear-gradient(135deg, #34D399, #059669)', glow: 'rgba(16, 185, 129, 0.35)' },
+    { key: 'irregular', label: 'Irregular', value: props.summary.irregular_sections, icon: 'pi-exclamation-circle', bar: '#F97316', badge: 'linear-gradient(135deg, #FB923C, #EA580C)', glow: 'rgba(249, 115, 22, 0.35)' },
+    { key: 'subjects', label: 'Subjects', value: props.summary.total_subjects, icon: 'pi-book', bar: '#8B5CF6', badge: 'linear-gradient(135deg, #A78BFA, #7C3AED)', glow: 'rgba(139, 92, 246, 0.35)' },
+    { key: 'scheduled', label: 'Scheduled', value: props.summary.scheduled_subjects, icon: 'pi-calendar-plus', bar: '#14B8A6', badge: 'linear-gradient(135deg, #2DD4BF, #0D9488)', glow: 'rgba(20, 184, 166, 0.35)' },
+    { key: 'unscheduled', label: 'Unscheduled', value: props.summary.unscheduled_subjects, icon: 'pi-calendar-times', bar: '#EF4444', badge: 'linear-gradient(135deg, #F87171, #DC2626)', glow: 'rgba(239, 68, 68, 0.35)' },
+    { key: 'faculty', label: 'Faculty', value: props.summary.total_faculty, icon: 'pi-users', bar: '#8B5CF6', badge: 'linear-gradient(135deg, #C4B5FD, #7C3AED)', glow: 'rgba(139, 92, 246, 0.35)' },
+    { key: 'rooms', label: 'Rooms', value: props.summary.total_rooms, icon: 'pi-building', bar: '#6366F1', badge: 'linear-gradient(135deg, #818CF8, #4F46E5)', glow: 'rgba(99, 102, 241, 0.35)' },
+    {
+        label: 'Scheduling Completion',
+        value: `${props.summary.completion_percent}%`,
+        icon: 'pi-percentage',
+        highlight: true,
+        badge: 'linear-gradient(135deg, #2DD4BF, #0D9488)',
+    },
 ]);
+
+// Which card's breakdown is currently open — one at a time, accordion-style.
+const expandedCard = ref(null);
+// How tall the open popover is allowed to be, computed fresh each time
+// a card opens (see toggleCard()) from the ACTUAL space available below
+// that specific card on screen right now — a fixed guess (e.g. 280px)
+// broke whenever a card sat low enough on the page that less than that
+// remained before the browser window's bottom edge: the popover isn't
+// clipped by ITS OWN max-height in that case, it's clipped by the
+// viewport itself, so its internal overflow-y:auto scrollbar never even
+// engages and the rest of the list is simply unreachable. Clamped to a
+// sensible floor/ceiling so it's never uselessly short or needlessly
+// tall.
+const popoverMaxHeight = ref(280);
+
+function toggleCard(key, event) {
+    if (!key) return;
+    if (expandedCard.value === key) {
+        expandedCard.value = null;
+        return;
+    }
+    expandedCard.value = key;
+
+    // Measure the space between this card's bottom edge and the bottom
+    // of the viewport (minus a small margin so the popover never
+    // touches the very edge of the window), then cap the popover to
+    // that — regardless of how the outer page/layout scrolls.
+    const cardEl = event?.currentTarget;
+    if (cardEl) {
+        const rect = cardEl.getBoundingClientRect();
+        const available = window.innerHeight - rect.bottom - 24;
+        popoverMaxHeight.value = Math.max(160, Math.min(280, available));
+    }
+}
+
+// Programs and Sections both read as "College > Major" — group the flat
+// breakdown rows from the backend into that shape once, here, rather
+// than re-deriving it inside the template.
+function groupByCollege(rows, itemKey) {
+    const map = new Map();
+    for (const row of rows || []) {
+        if (!map.has(row.college)) map.set(row.college, []);
+        map.get(row.college).push(row);
+    }
+    return Array.from(map.entries()).map(([college, items]) => ({
+        college,
+        items,
+        total: itemKey ? items.reduce((sum, it) => sum + (it[itemKey] || 0), 0) : items.length,
+    }));
+}
+const programsGrouped = computed(() => groupByCollege(props.summary.breakdowns?.programs, null));
+const sectionsGrouped = computed(() => groupByCollege(props.summary.breakdowns?.sections, 'count'));
+
+const subjectCategoryColor = (category) => ({
+    Major: isDark.value ? '#5B9CFF' : '#2563EB',
+    'General Education': isDark.value ? '#34D399' : '#059669',
+    Minor: isDark.value ? '#FBBF24' : '#D97706',
+}[category] || (isDark.value ? '#C4B5FD' : '#7C3AED'));
+const maxSubjectCategoryCount = computed(() => Math.max(1, ...(props.summary.breakdowns?.subjects || []).map((r) => r.count)));
 </script>
+
+<style scoped>
+.stat-card {
+    position: relative;
+    z-index: 1;
+    cursor: default;
+    transition: transform 0.2s ease, box-shadow 0.25s ease;
+}
+.stat-card--clickable {
+    cursor: pointer;
+}
+.stat-card--clickable:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 14px 32px -12px var(--card-glow, rgba(0, 0, 0, 0.25));
+}
+.stat-card--open {
+    z-index: 40;
+    box-shadow: 0 14px 32px -12px var(--card-glow, rgba(0, 0, 0, 0.25));
+}
+/* Diagonal shine sweep on hover — one deliberate motion moment, not a
+   generic fade/slide on every card. */
+.stat-card--clickable::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(115deg, transparent 40%, rgba(255, 255, 255, 0.35) 50%, transparent 60%);
+    transform: translateX(-120%);
+    transition: transform 0.6s ease;
+    pointer-events: none;
+}
+.stat-card--clickable:hover::before {
+    transform: translateX(120%);
+}
+.stat-card__chevron {
+    transition: transform 0.25s ease;
+}
+.stat-card__chevron--open {
+    transform: rotate(180deg);
+}
+.stat-card__watermark--spin {
+    animation: stat-card-spin 18s linear infinite;
+}
+@keyframes stat-card-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+/* Popover breakdown: floats above the layout instead of growing the
+   card, so the grid never reflows/jumps when a card is opened. Uses a
+   slim, subtly-styled scrollbar (not hidden) — unlike the filter
+   dropdowns, this list has no other visual cue that more sections
+   exist below the fold, so a fully-hidden scrollbar made it look cut
+   off instead of scrollable. */
+.stat-card__popover {
+    position: absolute;
+    top: calc(100% + 8px);
+    left: 0;
+    right: 0;
+    z-index: 30;
+    max-height: 280px;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(100, 116, 139, 0.35) transparent;
+    background: var(--neu-card-light);
+    border: 1px solid var(--neu-border-light);
+    border-radius: 14px;
+    box-shadow: 0 16px 40px -12px rgba(15, 23, 42, 0.25);
+    padding: 14px 10px 14px 16px;
+}
+.stat-card__popover::-webkit-scrollbar {
+    width: 6px;
+}
+.stat-card__popover::-webkit-scrollbar-track {
+    background: transparent;
+}
+.stat-card__popover::-webkit-scrollbar-thumb {
+    background: rgba(100, 116, 139, 0.35);
+    border-radius: 999px;
+}
+.stat-card__popover::-webkit-scrollbar-thumb:hover {
+    background: rgba(100, 116, 139, 0.55);
+}
+.dark .stat-card__popover {
+    background: var(--neu-card-dark);
+    border-color: var(--neu-border-dark);
+    box-shadow: 0 16px 40px -12px rgba(0, 0, 0, 0.5);
+    scrollbar-color: rgba(148, 163, 184, 0.35) transparent;
+}
+.dark .stat-card__popover::-webkit-scrollbar-thumb {
+    background: rgba(148, 163, 184, 0.35);
+}
+.dark .stat-card__popover::-webkit-scrollbar-thumb:hover {
+    background: rgba(148, 163, 184, 0.55);
+}
+.stat-card__panel-enter-active,
+.stat-card__panel-leave-active {
+    transition: transform 0.22s ease, opacity 0.18s ease;
+}
+.stat-card__panel-enter-from,
+.stat-card__panel-leave-to {
+    transform: translateY(-6px);
+    opacity: 0;
+}
+.stat-card__panel-enter-to,
+.stat-card__panel-leave-from {
+    transform: translateY(0);
+    opacity: 1;
+}
+</style>
 
 <template>
     <Head title="Reports" />
@@ -734,92 +911,125 @@ const summaryCards = computed(() => [
                 <div class="grid grid-cols-2 gap-4 md:grid-cols-4 neu-form">
                     <div>
                         <label class="text-xs font-semibold" :class="isDark ? 'text-slate-400' : 'text-slate-500'">Term</label>
-                        <Select
-                            v-model="selectedTerm"
-                            :options="termOptions"
-                            optionLabel="label"
-                            optionValue="value"
-                            class="neu-inset w-full mt-1 !rounded-xl !border-none"
-                            :pt="{ overlay: { class: isDark ? 'dark-scope' : '' } }"
-                            @change="onTermChange"
-                        >
-                            <template #option="{ option }">
-                                <span class="flex items-center gap-2">
-                                    {{ option.label }}
-                                    <Tag v-if="option.status === 'Archived'" value="Archived" severity="warn" class="!text-[10px] !py-0.5" />
-                                </span>
-                            </template>
-                        </Select>
+                        <div class="relative mt-1">
+                            <i class="pi pi-calendar pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-sm" :class="isDark ? 'text-slate-500' : 'text-slate-400'"></i>
+                            <Select
+                                v-model="selectedTerm"
+                                :options="termOptions"
+                                optionLabel="label"
+                                optionValue="value"
+                                class="neu-inset w-full !rounded-xl !border-none"
+                                :pt="{ label: { class: '!pl-9' }, overlay: { class: isDark ? 'dark-scope' : '' } }"
+                                @change="onTermChange"
+                            >
+                                <template #option="{ option }">
+                                    <span class="flex items-center gap-2">
+                                        {{ option.label }}
+                                        <Tag v-if="option.status === 'Archived'" value="Archived" severity="warn" class="!text-[10px] !py-0.5" />
+                                    </span>
+                                </template>
+                            </Select>
+                        </div>
                     </div>
                     <div>
                         <label class="text-xs font-semibold" :class="isDark ? 'text-slate-400' : 'text-slate-500'">Academic Year</label>
-                        <Select v-model="form.academic_year" :options="academicYearOptions" optionLabel="label" optionValue="value" placeholder="All Years" showClear class="neu-inset w-full mt-1 !rounded-xl !border-none" :pt="{ overlay: { class: isDark ? 'dark-scope' : '' } }" />
+                        <div class="relative mt-1">
+                            <i class="pi pi-clock pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-sm" :class="isDark ? 'text-slate-500' : 'text-slate-400'"></i>
+                            <Select v-model="form.academic_year" :options="academicYearOptions" optionLabel="label" optionValue="value" placeholder="All Years" showClear class="neu-inset w-full !rounded-xl !border-none" :pt="{ label: { class: '!pl-9' }, overlay: { class: isDark ? 'dark-scope' : '' } }" />
+                        </div>
                     </div>
                     <div>
                         <label class="text-xs font-semibold" :class="isDark ? 'text-slate-400' : 'text-slate-500'">Semester</label>
-                        <Select v-model="form.semester" :options="semesterOptions" optionLabel="label" optionValue="value" placeholder="All Semesters" showClear class="neu-inset w-full mt-1 !rounded-xl !border-none" :pt="{ overlay: { class: isDark ? 'dark-scope' : '' } }" />
+                        <div class="relative mt-1">
+                            <i class="pi pi-hourglass pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-sm" :class="isDark ? 'text-slate-500' : 'text-slate-400'"></i>
+                            <Select v-model="form.semester" :options="semesterOptions" optionLabel="label" optionValue="value" placeholder="All Semesters" showClear class="neu-inset w-full !rounded-xl !border-none" :pt="{ label: { class: '!pl-9' }, overlay: { class: isDark ? 'dark-scope' : '' } }" />
+                        </div>
                     </div>
                     <div>
                         <label class="text-xs font-semibold" :class="isDark ? 'text-slate-400' : 'text-slate-500'">Report Type</label>
-                        <Select v-model="reportType" :options="reportTypeOptions" optionLabel="label" optionValue="value" optionGroupLabel="label" optionGroupChildren="items" placeholder="Select Report" class="neu-inset w-full mt-1 !rounded-xl !border-none" :pt="{ overlay: { class: isDark ? 'dark-scope' : '' } }" />
+                        <div class="relative mt-1">
+                            <i class="pi pi-file pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-sm" :class="isDark ? 'text-slate-500' : 'text-slate-400'"></i>
+                            <Select v-model="reportType" :options="reportTypeOptions" optionLabel="label" optionValue="value" optionGroupLabel="label" optionGroupChildren="items" placeholder="Select Report" class="neu-inset w-full !rounded-xl !border-none" :pt="{ label: { class: '!pl-9' }, overlay: { class: isDark ? 'dark-scope' : '' } }" />
+                        </div>
                     </div>
                     <div>
                         <label class="text-xs font-semibold" :class="isDark ? 'text-slate-400' : 'text-slate-500'">College / Program</label>
-                        <Select v-model="form.college_id" :options="collegeOptions" optionLabel="label" optionValue="value" class="neu-inset w-full mt-1 !rounded-xl !border-none" :pt="{ overlay: { class: isDark ? 'dark-scope' : '' } }" />
+                        <div class="relative mt-1">
+                            <i class="pi pi-building pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-sm" :class="isDark ? 'text-slate-500' : 'text-slate-400'"></i>
+                            <Select v-model="form.college_id" :options="collegeOptions" optionLabel="label" optionValue="value" class="neu-inset w-full !rounded-xl !border-none" :pt="{ label: { class: '!pl-9' }, overlay: { class: isDark ? 'dark-scope' : '' } }" />
+                        </div>
                     </div>
                     <div v-if="showProgramScopedFilters">
                         <label class="text-xs font-semibold" :class="isDark ? 'text-slate-400' : 'text-slate-500'">Major</label>
-                        <Select v-model="form.major_id" :options="majorOptions" optionLabel="label" optionValue="value" class="neu-inset w-full mt-1 !rounded-xl !border-none" :pt="{ overlay: { class: isDark ? 'dark-scope' : '' } }" />
+                        <div class="relative mt-1">
+                            <i class="pi pi-tag pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-sm" :class="isDark ? 'text-slate-500' : 'text-slate-400'"></i>
+                            <Select v-model="form.major_id" :options="majorOptions" optionLabel="label" optionValue="value" class="neu-inset w-full !rounded-xl !border-none" :pt="{ label: { class: '!pl-9' }, overlay: { class: isDark ? 'dark-scope' : '' } }" />
+                        </div>
                     </div>
                     <div v-if="showProgramScopedFilters">
                         <label class="text-xs font-semibold" :class="isDark ? 'text-slate-400' : 'text-slate-500'">Year Level</label>
-                        <Select v-model="form.year_level" :options="yearLevelOptions" optionLabel="label" optionValue="value" class="neu-inset w-full mt-1 !rounded-xl !border-none" :pt="{ overlay: { class: isDark ? 'dark-scope' : '' } }" />
+                        <div class="relative mt-1">
+                            <i class="pi pi-sort-numeric-up pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-sm" :class="isDark ? 'text-slate-500' : 'text-slate-400'"></i>
+                            <Select v-model="form.year_level" :options="yearLevelOptions" optionLabel="label" optionValue="value" class="neu-inset w-full !rounded-xl !border-none" :pt="{ label: { class: '!pl-9' }, overlay: { class: isDark ? 'dark-scope' : '' } }" />
+                        </div>
                     </div>
                     <div v-if="showProgramScopedFilters">
                         <label class="text-xs font-semibold" :class="isDark ? 'text-slate-400' : 'text-slate-500'">Section Type</label>
-                        <Select v-model="form.section_type" :disabled="forcesIrregular" :options="sectionTypeOptions" optionLabel="label" optionValue="value" class="neu-inset w-full mt-1 !rounded-xl !border-none" :pt="{ overlay: { class: isDark ? 'dark-scope' : '' } }" />
+                        <div class="relative mt-1">
+                            <i class="pi pi-users pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-sm" :class="isDark ? 'text-slate-500' : 'text-slate-400'"></i>
+                            <Select v-model="form.section_type" :disabled="forcesIrregular" :options="sectionTypeOptions" optionLabel="label" optionValue="value" class="neu-inset w-full !rounded-xl !border-none" :pt="{ label: { class: '!pl-9' }, overlay: { class: isDark ? 'dark-scope' : '' } }" />
+                        </div>
                     </div>
                     <div v-if="needsSection">
                         <label class="text-xs font-semibold" :class="isDark ? 'text-slate-400' : 'text-slate-500'">
                             Section
                             <span v-if="sectionIsMultiple" class="font-normal normal-case" :class="isDark ? 'text-slate-500' : 'text-slate-400'">— pick any combination; each prints as its own section</span>
                         </label>
-                        <MultiSelect
-                            v-if="sectionIsMultiple"
-                            v-model="sectionIds"
-                            :options="sectionMultiOptions"
-                            optionLabel="label"
-                            optionValue="value"
-                            filter
-                            display="chip"
-                            placeholder="All Sections"
-                            class="neu-inset w-full mt-1 !rounded-xl !border-none"
-                            :pt="{ overlay: { class: isDark ? 'dark-scope' : '' } }"
-                        />
-                        <Select v-else v-model="form.section_id" :options="sectionOptions" optionLabel="label" optionValue="value" class="neu-inset w-full mt-1 !rounded-xl !border-none" :pt="{ overlay: { class: isDark ? 'dark-scope' : '' } }" />
+                        <div class="relative mt-1">
+                            <i class="pi pi-bookmark pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-sm" :class="isDark ? 'text-slate-500' : 'text-slate-400'"></i>
+                            <MultiSelect
+                                v-if="sectionIsMultiple"
+                                v-model="sectionIds"
+                                :options="sectionMultiOptions"
+                                optionLabel="label"
+                                optionValue="value"
+                                filter
+                                display="chip"
+                                placeholder="All Sections"
+                                class="neu-inset w-full !rounded-xl !border-none"
+                                :pt="{ labelContainer: { class: '!pl-9' }, overlay: { class: isDark ? 'dark-scope' : '' } }"
+                            />
+                            <Select v-else v-model="form.section_id" :options="sectionOptions" optionLabel="label" optionValue="value" class="neu-inset w-full !rounded-xl !border-none" :pt="{ label: { class: '!pl-9' }, overlay: { class: isDark ? 'dark-scope' : '' } }" />
+                        </div>
                     </div>
                     <div v-if="needsFaculty">
                         <label class="text-xs font-semibold" :class="isDark ? 'text-slate-400' : 'text-slate-500'">
                             Faculty
                             <span v-if="facultyIsMultiple" class="font-normal normal-case" :class="isDark ? 'text-slate-500' : 'text-slate-400'">— pick any combination; each prints as its own faculty</span>
                         </label>
-                        <MultiSelect
-                            v-if="facultyIsMultiple"
-                            v-model="facultyIds"
-                            :options="facultyMultiOptions"
-                            optionLabel="label"
-                            optionValue="value"
-                            filter
-                            display="chip"
-                            placeholder="All Faculty"
-                            class="neu-inset w-full mt-1 !rounded-xl !border-none"
-                            :pt="{ overlay: { class: isDark ? 'dark-scope' : '' } }"
-                        />
-                        <Select v-else v-model="form.faculty_id" :options="facultyOptions" optionLabel="label" optionValue="value" filter class="neu-inset w-full mt-1 !rounded-xl !border-none" :pt="{ overlay: { class: isDark ? 'dark-scope' : '' } }" />
+                        <div class="relative mt-1">
+                            <i class="pi pi-user pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-sm" :class="isDark ? 'text-slate-500' : 'text-slate-400'"></i>
+                            <MultiSelect
+                                v-if="facultyIsMultiple"
+                                v-model="facultyIds"
+                                :options="facultyMultiOptions"
+                                optionLabel="label"
+                                optionValue="value"
+                                filter
+                                display="chip"
+                                placeholder="All Faculty"
+                                class="neu-inset w-full !rounded-xl !border-none"
+                                :pt="{ labelContainer: { class: '!pl-9' }, overlay: { class: isDark ? 'dark-scope' : '' } }"
+                            />
+                            <Select v-else v-model="form.faculty_id" :options="facultyOptions" optionLabel="label" optionValue="value" filter class="neu-inset w-full !rounded-xl !border-none" :pt="{ label: { class: '!pl-9' }, overlay: { class: isDark ? 'dark-scope' : '' } }" />
+                        </div>
                     </div>
                     <div v-if="needsRoom">
                         <label class="text-xs font-semibold" :class="isDark ? 'text-slate-400' : 'text-slate-500'">Room</label>
-                        <Select v-model="form.room_id" :options="roomOptions" optionLabel="label" optionValue="value" class="neu-inset w-full mt-1 !rounded-xl !border-none" :pt="{ overlay: { class: isDark ? 'dark-scope' : '' } }" />
+                        <div class="relative mt-1">
+                            <i class="pi pi-map-marker pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-sm" :class="isDark ? 'text-slate-500' : 'text-slate-400'"></i>
+                            <Select v-model="form.room_id" :options="roomOptions" optionLabel="label" optionValue="value" class="neu-inset w-full !rounded-xl !border-none" :pt="{ label: { class: '!pl-9' }, overlay: { class: isDark ? 'dark-scope' : '' } }" />
+                        </div>
                     </div>
                 </div>
                 <div class="mt-5 flex gap-2">
@@ -828,17 +1038,110 @@ const summaryCards = computed(() => [
                 </div>
             </div>
 
-            <!-- Dashboard Summary -->
-            <div class="mt-6 grid grid-cols-2 gap-4 no-print md:grid-cols-5">
-                <div v-for="card in summaryCards" :key="card.label" class="neu-card rounded-2xl p-4 transition-colors duration-300">
-                    <span
-                        class="neu-icon-well neu-glow flex h-10 w-10 items-center justify-center rounded-xl"
-                        :style="{ '--neu-glow-color': card.glow }"
-                    >
-                        <i class="pi text-base" :class="[card.icon]" :style="{ color: card.color }"></i>
-                    </span>
-                    <p class="mt-3 text-xl font-bold" :class="isDark ? 'text-white' : 'text-[#1E293B]'">{{ card.value }}</p>
-                    <p class="mt-1 text-xs font-semibold uppercase tracking-wide" :class="isDark ? 'text-slate-400' : 'text-slate-400'">{{ card.label }}</p>
+            <!-- Dashboard Summary — vivid, clickable stat cards. Each
+                 non-highlight card opens its own breakdown in place;
+                 Scheduling Completion stays a plain highlight card since
+                 it's a computed ratio, not a list of anything. -->
+            <div class="mt-6 grid grid-cols-2 items-start gap-4 no-print md:grid-cols-5">
+                <div
+                    v-for="card in summaryCards"
+                    :key="card.label"
+                    class="stat-card relative rounded-2xl p-5"
+                    :class="[
+                        card.highlight ? 'shadow-lg' : 'neu-card',
+                        card.key ? 'stat-card--clickable' : '',
+                        expandedCard === card.key && card.key ? 'stat-card--open overflow-visible' : 'overflow-hidden',
+                    ]"
+                    :style="{ background: card.highlight ? card.badge : (isDark ? `linear-gradient(135deg, ${card.bar}26, transparent 65%)` : `linear-gradient(135deg, ${card.bar}1F, transparent 65%)`), '--card-glow': card.glow }"
+                    @click="toggleCard(card.key, $event)"
+                >
+                    <div v-if="!card.highlight" class="absolute inset-x-0 top-0 h-1" :style="{ background: card.bar }"></div>
+
+                    <i
+                        class="pi pointer-events-none absolute -bottom-3 -right-3 text-7xl"
+                        :class="[card.icon, card.highlight ? 'stat-card__watermark--spin' : '']"
+                        :style="{ color: card.highlight ? 'rgba(255,255,255,0.16)' : `${card.bar}${isDark ? '33' : '26'}` }"
+                    ></i>
+
+                    <div class="relative flex items-start justify-between">
+                        <span class="flex h-11 w-11 items-center justify-center rounded-xl shadow-sm" :style="{ background: card.highlight ? 'rgba(255,255,255,0.22)' : card.badge }">
+                            <i class="pi text-lg text-white" :class="card.icon"></i>
+                        </span>
+                        <i
+                            v-if="card.key"
+                            class="pi pi-chevron-down stat-card__chevron mt-1.5 text-xs"
+                            :class="[expandedCard === card.key ? 'stat-card__chevron--open' : '', isDark ? 'text-slate-500' : 'text-slate-400']"
+                        ></i>
+                    </div>
+
+                    <p class="relative mt-4 text-3xl font-extrabold" style="font-variant-numeric: tabular-nums" :class="card.highlight ? 'text-white' : (isDark ? 'text-white' : 'text-[#1E293B]')">{{ card.value }}</p>
+                    <p class="relative mt-1 text-xs font-bold uppercase tracking-wide" :class="card.highlight ? 'text-white/85' : (isDark ? 'text-slate-400' : 'text-slate-400')">{{ card.label }}</p>
+
+                    <Transition name="stat-card__panel">
+                        <div v-if="card.key && expandedCard === card.key" class="stat-card__popover text-left" :style="{ maxHeight: popoverMaxHeight + 'px' }" @click.stop>
+                            <!-- Programs: grouped by College -->
+                            <div v-if="card.key === 'programs'" class="space-y-3">
+                                <div v-for="group in programsGrouped" :key="group.college">
+                                    <p class="text-[11px] font-bold uppercase tracking-wide" :class="isDark ? 'text-slate-400' : 'text-slate-400'">{{ group.college }}</p>
+                                    <div v-for="item in group.items" :key="item.code" class="mt-1 flex items-baseline justify-between gap-2">
+                                        <span class="text-sm font-semibold" :class="isDark ? 'text-slate-100' : 'text-slate-700'">{{ item.code }}</span>
+                                        <span class="truncate text-xs" :class="isDark ? 'text-slate-500' : 'text-slate-400'">{{ item.name }}</span>
+                                    </div>
+                                </div>
+                                <p v-if="!programsGrouped.length" class="text-xs italic" :class="isDark ? 'text-slate-500' : 'text-slate-400'">No programs found.</p>
+                            </div>
+
+                            <!-- Sections: grouped by College, per-Major counts -->
+                            <div v-else-if="card.key === 'sections'" class="space-y-3">
+                                <div v-for="group in sectionsGrouped" :key="group.college">
+                                    <p class="text-[11px] font-bold uppercase tracking-wide" :class="isDark ? 'text-slate-400' : 'text-slate-400'">{{ group.college }} <span class="font-normal normal-case">({{ group.total }})</span></p>
+                                    <div v-for="item in group.items" :key="item.major" class="mt-1 flex items-center justify-between gap-2">
+                                        <span class="text-sm" :class="isDark ? 'text-slate-200' : 'text-slate-600'">{{ item.major }}</span>
+                                        <span class="text-sm font-bold" style="font-variant-numeric: tabular-nums" :class="isDark ? 'text-white' : 'text-[#1E293B]'">{{ item.count }}</span>
+                                    </div>
+                                </div>
+                                <p v-if="!sectionsGrouped.length" class="text-xs italic" :class="isDark ? 'text-slate-500' : 'text-slate-400'">No sections found.</p>
+                            </div>
+
+                            <!-- Regular / Irregular: plain code chips -->
+                            <div v-else-if="card.key === 'regular' || card.key === 'irregular'" class="flex flex-wrap gap-1.5">
+                                <span
+                                    v-for="code in props.summary.breakdowns?.[card.key] || []" :key="code"
+                                    class="rounded-md px-2 py-1 text-xs font-semibold"
+                                    :class="isDark ? 'bg-white/10 text-slate-200' : 'bg-slate-100 text-slate-600'"
+                                >{{ code }}</span>
+                                <p v-if="!(props.summary.breakdowns?.[card.key] || []).length" class="text-xs italic" :class="isDark ? 'text-slate-500' : 'text-slate-400'">None this term.</p>
+                            </div>
+
+                            <!-- Subjects: by category, with a proportion bar -->
+                            <div v-else-if="card.key === 'subjects'" class="space-y-2.5">
+                                <div v-for="row in props.summary.breakdowns?.subjects || []" :key="row.category">
+                                    <div class="flex items-center justify-between text-xs">
+                                        <span :class="isDark ? 'text-slate-200' : 'text-slate-600'">{{ row.category }}</span>
+                                        <span class="font-bold" style="font-variant-numeric: tabular-nums" :class="isDark ? 'text-white' : 'text-[#1E293B]'">{{ row.count }}</span>
+                                    </div>
+                                    <div class="mt-1 h-1.5 overflow-hidden rounded-full" :class="isDark ? 'bg-white/10' : 'bg-slate-200/70'">
+                                        <div class="h-full rounded-full" :style="{ width: (row.count / maxSubjectCategoryCount * 100) + '%', backgroundColor: subjectCategoryColor(row.category) }"></div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Scheduled / Unscheduled: by Section, busiest first -->
+                            <div v-else-if="card.key === 'scheduled' || card.key === 'unscheduled'" class="space-y-1.5">
+                                <div v-for="row in props.summary.breakdowns?.[card.key] || []" :key="row.section" class="flex items-center justify-between">
+                                    <span class="text-sm" :class="isDark ? 'text-slate-200' : 'text-slate-600'">{{ row.section }}</span>
+                                    <span class="text-sm font-bold" style="font-variant-numeric: tabular-nums" :class="isDark ? 'text-white' : 'text-[#1E293B]'">{{ row.count }}</span>
+                                </div>
+                                <p v-if="!(props.summary.breakdowns?.[card.key] || []).length" class="text-xs italic" :class="isDark ? 'text-slate-500' : 'text-slate-400'">None this term.</p>
+                            </div>
+
+                            <!-- Faculty / Rooms: plain alphabetical list -->
+                            <div v-else-if="card.key === 'faculty' || card.key === 'rooms'" class="space-y-1">
+                                <p v-for="(name, idx) in props.summary.breakdowns?.[card.key] || []" :key="idx" class="truncate text-sm" :class="isDark ? 'text-slate-200' : 'text-slate-600'">{{ name }}</p>
+                                <p v-if="!(props.summary.breakdowns?.[card.key] || []).length" class="text-xs italic" :class="isDark ? 'text-slate-500' : 'text-slate-400'">None found.</p>
+                            </div>
+                        </div>
+                    </Transition>
                 </div>
             </div>
 
@@ -1022,6 +1325,21 @@ const summaryCards = computed(() => [
 .dark-scope :deep(.p-select-label) { color: #F8FAFC !important; }
 .dark-scope :deep(.p-select-label.p-placeholder) { color: #7C8CA8 !important; }
 .dark-scope :deep(.p-select.p-disabled) { background: rgba(255, 255, 255, 0.03) !important; color: #64748B !important; }
+
+/* Fixed-height dropdown panels: the panel no longer grows/shrinks
+   with the option count. It opens at a set max height and the list
+   inside scrolls, with the scrollbar hidden for a clean look.
+   These target the teleported PrimeVue Select overlay, so :global()
+   is required (same reasoning as the block comment above). */
+:global(.p-select-overlay .p-select-list-container) {
+    max-height: 220px !important;
+    overflow-y: auto !important;
+    scrollbar-width: none !important;      /* Firefox */
+    -ms-overflow-style: none !important;   /* old Edge/IE */
+}
+:global(.p-select-overlay .p-select-list-container::-webkit-scrollbar) {
+    display: none !important;              /* Chrome/Safari/new Edge */
+}
 
 .dark-scope :deep(.p-button-outlined.p-button-secondary) { color: #CBD5E1 !important; border-color: rgba(255, 255, 255, 0.2) !important; background: transparent !important; }
 .dark-scope :deep(.p-button-outlined.p-button-secondary:hover) { background: rgba(255, 255, 255, 0.08) !important; }

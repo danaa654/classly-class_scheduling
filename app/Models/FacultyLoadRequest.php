@@ -2,8 +2,8 @@
 
 namespace App\Models;
 
+use App\Policies\FacultyPolicy;
 use App\Services\SettingsService;
-use App\Support\AccessScope;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -29,7 +29,7 @@ class FacultyLoadRequest extends Model
      * caps used when a College is short-staffed. Keep in sync with
      * UpdateFacultyRequest/StoreFacultyRequest.
      */
-    public const HARD_CAP_UNITS = 42;
+    public const HARD_CAP_UNITS = 45;
 
     /**
      * The actual ceiling a given user may request/approve up to right
@@ -39,13 +39,17 @@ class FacultyLoadRequest extends Model
      *
      * "Allow Administrator override above the maximum load"
      * (workload.allow_admin_override) is what actually lets anyone
-     * exceed that configured value: when it's on, Admin/Registrar get
-     * the full HARD_CAP_UNITS ceiling (they're the only ones who can
-     * approve past the normal max in the first place); when it's off,
-     * even Admin/Registrar are held to the configured max, same as
-     * everyone else. HARD_CAP_UNITS itself never moves — it's the one
-     * number nothing in the system can be pushed past, override or
-     * not.
+     * exceed that configured value: when it's on, EVERY role that may
+     * change a faculty load ceiling directly — Admin, Registrar, Dean,
+     * OIC and Assistant Dean (FacultyPolicy::changeMaxLoad()) — gets the
+     * full HARD_CAP_UNITS ceiling, so e.g. a Dean can take a faculty
+     * member from 24 up to 45 units without needing an Administrator;
+     * when it's off, all of them are held to the configured max.
+     * (This used to be Admin/Registrar only, which left Dean/OIC/
+     * Assistant Dean stuck at the configured max even though the policy
+     * already lets them edit the ceiling.) HARD_CAP_UNITS itself never
+     * moves — it's the one number nothing in the system can be pushed
+     * past, override or not.
      */
     public static function effectiveCapFor(?User $user): int
     {
@@ -57,7 +61,9 @@ class FacultyLoadRequest extends Model
             $configuredMax = self::HARD_CAP_UNITS;
         }
 
-        if ($user && $allowOverride && AccessScope::isUnrestricted($user)) {
+        // Single source of truth for "who may change a load ceiling" — the
+        // same policy every controller already authorizes against.
+        if ($user && $allowOverride && app(FacultyPolicy::class)->changeMaxLoad($user)) {
             return self::HARD_CAP_UNITS;
         }
 

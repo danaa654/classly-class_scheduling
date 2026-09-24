@@ -17,6 +17,12 @@ use App\Policies\SectionPolicy;
 use App\Policies\SubjectPolicy;
 use App\Policies\UserPolicy;
 use App\Support\AccessScope;
+use App\Support\ScheduleCache;
+use Illuminate\Database\Events\QueryExecuted;
+use Illuminate\Queue\Events\JobFailed;
+use Illuminate\Queue\Events\JobProcessed;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\ServiceProvider;
 
@@ -85,5 +91,19 @@ class AppServiceProvider extends ServiceProvider
         Gate::define('view-scheduling', fn (User $user) => $user->hasAnyRole([
             'Administrator', 'Registrar', 'Assistant Dean', 'Dean', 'OIC',
         ]));
+
+        // PERFORMANCE — self-invalidating read cache. Every executed SQL
+        // statement is checked (cheap string test) and, when it WRITES
+        // to a scheduling/reference/user/role table, the shared cache
+        // generation rotates so cached Dashboard/Rooms/Reports/JSON
+        // entries are discarded automatically. Catches query-builder
+        // bulk updates that never fire Eloquent model events. See
+        // App\Support\ScheduleCache.
+        DB::listen(fn (QueryExecuted $query) => ScheduleCache::observeQuery($query));
+
+        // Long-lived queue workers don't hit the HTTP "terminating"
+        // hook per job, so close the rotation after each job instead.
+        Event::listen(JobProcessed::class, fn () => ScheduleCache::flushPending());
+        Event::listen(JobFailed::class, fn () => ScheduleCache::flushPending());
     }
 }

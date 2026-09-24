@@ -191,6 +191,20 @@ class Section extends Model
      * @param  \Illuminate\Database\Eloquent\Builder<Section>  $query
      * @return \Illuminate\Database\Eloquent\Builder<Section>
      */
+    /**
+     * The College id this Section belongs to, via its Major's
+     * Department — or null for an irregular/misconfigured Section
+     * with no Major (see isIrregular()).
+     *
+     * Convenience helper only — not a true Eloquent relation/column.
+     * Mirrors Major::college()'s "load and read" approach; prefer
+     * eager-loading `major.department` before calling this in a loop.
+     */
+    public function collegeId(): ?int
+    {
+        return $this->major?->department?->college_id;
+    }
+
     public function scopeVisibleTo($query, ?\App\Models\User $user)
     {
         if (\App\Support\AccessScope::isUnrestricted($user) || \App\Support\AccessScope::isAssistantDean($user)) {

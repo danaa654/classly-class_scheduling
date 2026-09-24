@@ -57,6 +57,13 @@ class BatchUpdateSectionSubjectScheduleRequest extends FormRequest
             // Same acknowledgment pattern as capacity_confirmed above,
             // for a Weekly Hours Mismatch (scheduled Days x Time
             // doesn't add up to the Subject's required weekly hours).
+            // "Proceed Anyway" on a Teaching Load Limit warning. MUST be
+            // listed here: batchUpdateSchedule() reads $request->validated(),
+            // which silently drops any key not in these rules — without
+            // this, the frontend's workload_confirmed=true never reached the
+            // controller, so the row was skipped again on the retry and the
+            // faculty's units were never raised.
+            'rows.*.workload_confirmed' => ['nullable', 'boolean'],
             'rows.*.hours_confirmed' => ['nullable', 'boolean'],
             // Same acknowledgment pattern as capacity_confirmed above,
             // for a Room Type Mismatch (a Lecture-only subject dropped

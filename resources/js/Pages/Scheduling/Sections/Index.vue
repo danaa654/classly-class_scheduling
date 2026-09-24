@@ -22,6 +22,7 @@ import Tab from 'primevue/tab';
 import TabPanels from 'primevue/tabpanels';
 import TabPanel from 'primevue/tabpanel';
 import InfoPopover from '@/Components/InfoPopover.vue';
+import LoadingSkeleton from '@/Components/LoadingSkeleton.vue';
 import { useTheme } from '@/composables/useTheme';
 
 const { theme } = useTheme();
@@ -1470,7 +1471,9 @@ const onUnlockSection = (section) => {
                     </div>
 
                     <!-- Sections Table -->
+                    <LoadingSkeleton v-if="loading && !sections.data.length" variant="table" :rows="8" :columns="6" />
                     <DataTable
+                        v-else
                         :value="sections.data"
                         :loading="loading"
                         dataKey="id"
@@ -2484,9 +2487,35 @@ const onUnlockSection = (section) => {
 
 .dark-scope :deep(.p-divider.p-divider-horizontal:before) { border-color: rgba(255, 255, 255, 0.1) !important; }
 
-.dark-scope :deep(.p-tablist) { background: transparent !important; border-color: rgba(255, 255, 255, 0.1) !important; }
-.dark-scope :deep(.p-tab) { color: #94A3B8 !important; }
-.dark-scope :deep(.p-tab-active) { color: #F8FAFC !important; }
+/* Tabs (e.g. "Load From Curriculum" / "Manual Selection" in Add Section).
+   PrimeVue paints the tab strip AND the panel area white via its own theme
+   tokens, which made the light dark-mode text unreadable. Repaint every
+   layer of the Tabs component so the whole box follows dark mode. */
+.dark-scope :deep(.p-tabs),
+.dark-scope :deep(.p-tablist),
+.dark-scope :deep(.p-tablist-content),
+.dark-scope :deep(.p-tablist-tab-list),
+.dark-scope :deep(.p-tabpanels),
+.dark-scope :deep(.p-tabpanel) {
+    background: transparent !important;
+    color: #E2E8F0 !important;
+}
+.dark-scope :deep(.p-tablist),
+.dark-scope :deep(.p-tablist-tab-list) { border-color: rgba(255, 255, 255, 0.1) !important; }
+.dark-scope :deep(.p-tab) { color: #94A3B8 !important; background: transparent !important; }
+.dark-scope :deep(.p-tab:hover) { color: #F8FAFC !important; }
+.dark-scope :deep(.p-tab-active),
+.dark-scope :deep(.p-tab[data-p-active="true"]) { color: #34D399 !important; }
+.dark-scope :deep(.p-tablist-active-bar) { background: #34D399 !important; }
+.dark-scope :deep(.p-tablist-nav-button) { background: #0F1730 !important; color: #E2E8F0 !important; }
+
+/* Tailwind hover utilities aren't remapped above — without this a hovered
+   subject row turned near-white while its text stayed light. */
+.dark-scope :deep(.hover\:bg-slate-50:hover) { background-color: rgba(255, 255, 255, 0.08) !important; }
+.dark-scope :deep(.divide-slate-100 > :not([hidden]) ~ :not([hidden])) { border-color: rgba(255, 255, 255, 0.1) !important; }
+
+/* Native checkboxes: render with the dark color scheme and brand accent. */
+.dark-scope :deep(input[type="checkbox"]) { color-scheme: dark; accent-color: #10B981; }
 
 .dark-scope :deep(.p-datatable-thead > tr > th) { background: rgba(255, 255, 255, 0.04) !important; color: #CBD5E1 !important; border-color: rgba(255, 255, 255, 0.1) !important; }
 .dark-scope :deep(.p-datatable-tbody > tr) { background: transparent !important; color: #E2E8F0 !important; }

@@ -19,6 +19,7 @@ import Dialog from 'primevue/dialog';
 import Toast from 'primevue/toast';
 import Popover from 'primevue/popover';
 import InfoPopover from '@/Components/InfoPopover.vue';
+import LoadingSkeleton from '@/Components/LoadingSkeleton.vue';
 import { useTheme } from '@/composables/useTheme';
 
 const { theme } = useTheme();
@@ -481,7 +482,9 @@ const onDeleteSubject = (subject) => {
                     </Toolbar>
 
                     <!-- Subjects Table -->
+                    <LoadingSkeleton v-if="loading && !subjects.data.length" variant="table" :rows="8" :columns="6" />
                     <DataTable
+                        v-else
                         :value="subjects.data"
                         :loading="loading"
                         dataKey="id"
