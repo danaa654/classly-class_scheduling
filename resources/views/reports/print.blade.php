@@ -264,6 +264,14 @@
             border: 1px solid #cbd5e1;
         }
 
+        /* Without this, browsers drop background colors when printing — the
+           dark header row and the college-colored blocks came out white. */
+        .grid-table,
+        .grid-table * {
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
+        }
+
         .grid-table thead th {
             background: #1e293b;
             color: #ffffff;
@@ -318,9 +326,23 @@
             padding: 0;
         }
 
+        /* PAGE SPACING WITHOUT A PAGE MARGIN — a zero @page margin is what makes
+           the browser leave out its own header/footer (date, page title, the
+           127.0.0.1/reports/print?... address, page number). The margin's
+           spacing is put back by the .page-wrap table below: its empty
+           thead/tfoot rows repeat on EVERY printed page, so each page keeps
+           its top and bottom space (a plain body padding would only space
+           the first and last page). Invisible on screen (height 0). */
+        .page-wrap { width: 100%; border-collapse: collapse; }
+        .page-wrap > thead > tr > td,
+        .page-wrap > tbody > tr > td,
+        .page-wrap > tfoot > tr > td { padding: 0; border: 0; vertical-align: top; }
+        .page-spacer { height: 0; }
+
         @media print {
-            body { padding: 0 24px; }
-            @page { margin: 18mm 14mm; }
+            @page { margin: 0; }
+            body { padding: 0 calc(14mm + 24px); }  /* = old page margin (14mm) + old body padding (24px) */
+            .page-spacer { height: 18mm; }           /* = old top/bottom page margin */
         }
     </style>
     @if($gridData)
@@ -330,12 +352,42 @@
              than folded into the unconditional @page rule above. --}}
         <style>
             @media print {
-                @page { size: landscape; }
+                /* Zero page margin is what makes the browser leave out its own
+                   header/footer (date, page title, address line, page number).
+                   The spacing the margin used to give is put back by the
+                   .page-spacer rows (top/bottom) and body padding (sides) below, and the whole Grid print — letterhead, grid and
+                   the Confirmed/Noted/Approved block — is tightened so it
+                   fits on ONE landscape page. */
+                @page { size: landscape; margin: 0; }
+                body { padding: 0 12mm !important; }
+                .page-spacer { height: 8mm; }
+
+                .letterhead { padding-bottom: 6px; margin-bottom: 8px; }
+                .letterhead-school img { height: 40px; width: 40px; }
+                .letterhead h1 { font-size: 15px; }
+                .meta { margin-bottom: 6px; }
+                .meta p { margin: 0; font-size: 11px; }
+                .section-heading { margin-top: 4px; margin-bottom: 6px; }
+
+                .grid-table thead th { padding: 3px 4px; }
+                .grid-time-cell { padding: 1.5px 6px; font-size: 8.5px; line-height: 1.2; }
+                .grid-block-cell { padding: 3px 5px; }
+                .grid-block-subject { font-size: 9px; }
+                .grid-block-line { font-size: 8.5px; margin-top: 0; }
+                .grid-table tr { break-inside: avoid; }
+
+                .signoff { margin-top: 12px; break-inside: avoid; }
+                .signoff-label { margin-bottom: 14px; }
+                .signoff-entry { margin-bottom: 10px; }
             }
         </style>
     @endif
 </head>
 <body>
+<table class="page-wrap">
+<thead><tr><td><div class="page-spacer"></div></td></tr></thead>
+<tbody><tr><td>
+
 
     @include('reports.partials.letterhead')
 
@@ -395,10 +447,13 @@
                         @foreach($gridData['days'] as $day)
                             @if(isset($gridBlocksByCell[$day][$rowIndex]))
                                 @php($block = $gridBlocksByCell[$day][$rowIndex])
-                                <td class="grid-block-cell @if($block['online']) online @endif" rowspan="{{ $block['span'] }}">
-                                    <p class="grid-block-subject">{{ $block['line1'] }}</p>
-                                    <p class="grid-block-line">{{ $block['line2'] }}</p>
-                                    <p class="grid-block-line">{{ $block['line3'] }}</p>
+                                {{-- Block colored by its College (Settings -> College Colors);
+                                     an Online block gets a dashed border, as on screen. --}}
+                                <td class="grid-block-cell @if($block['online']) online @endif" rowspan="{{ $block['span'] }}"
+                                    style="background: {{ $block['colors']['bg'] }}; border: 1.5px {{ $block['online'] ? 'dashed' : 'solid' }} {{ $block['colors']['border'] }};">
+                                    <p class="grid-block-subject" style="color: {{ $block['colors']['text'] }};">{{ $block['line1'] }}</p>
+                                    <p class="grid-block-line" style="color: {{ $block['colors']['text'] }}; opacity: 0.85;">{{ $block['line2'] }}</p>
+                                    <p class="grid-block-line" style="color: {{ $block['colors']['text'] }}; opacity: 0.85;">{{ $block['line3'] }}</p>
                                 </td>
                             @elseif(! isset($gridCovered[$day][$rowIndex]))
                                 <td class="grid-empty-cell"></td>
@@ -603,6 +658,10 @@
         </div>
         <span>Generated: {{ $generatedAt->format('F j, Y g:i A') }}</span>
     </div>
+
+</td></tr></tbody>
+<tfoot><tr><td><div class="page-spacer"></div></td></tr></tfoot>
+</table>
 
     <script>
         // Auto-open the print dialog once the page (and logo image) has

@@ -1,6 +1,6 @@
 <script setup>
 import { Head, Link, router, usePage } from '@inertiajs/vue3';
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import Swal from 'sweetalert2';
 import AppLayout from '@/Layouts/AppLayout.vue';
 import KpiCard from '@/Components/Dashboard/KpiCard.vue';
@@ -8,6 +8,9 @@ import SchedulingProgressCard from '@/Components/Dashboard/SchedulingProgressCar
 import ConflictPanel from '@/Components/Dashboard/ConflictPanel.vue';
 import QuickActions from '@/Components/Dashboard/QuickActions.vue';
 import InfoPopover from '@/Components/InfoPopover.vue';
+import LiveClock from '@/Components/Dashboard/LiveClock.vue';
+import RoomOccupancyCard from '@/Components/Dashboard/RoomOccupancyCard.vue';
+import FacultyTodayCard from '@/Components/Dashboard/FacultyTodayCard.vue';
 
 const props = defineProps({
     roles: {
@@ -20,6 +23,9 @@ const props = defineProps({
         // { scope, kpis, progress, conflicts } — see DashboardService::overview()
     },
 });
+
+// Day/moment currently shown by the Room Occupancy card; feeds the Faculty Today sidebar.
+const occupancy = ref({ day: null, minute: 0, live: true, rooms: [], loading: true });
 
 const page = usePage();
 const user = page.props.auth.user;
@@ -58,29 +64,11 @@ function promptPasswordChangeIfRequired() {
     });
 }
 
-// Live clock — ticks every second while the Dashboard is mounted.
-const now = ref(new Date());
-let clockInterval = null;
-
+// The live clock is its own component (LiveClock) so its per-second
+// tick never re-renders the whole Dashboard.
 onMounted(() => {
-    clockInterval = setInterval(() => {
-        now.value = new Date();
-    }, 1000);
-
     promptPasswordChangeIfRequired();
 });
-
-onUnmounted(() => {
-    if (clockInterval) clearInterval(clockInterval);
-});
-
-const currentDateLabel = computed(() =>
-    now.value.toLocaleDateString(undefined, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
-
-);
-const currentTimeLabel = computed(() =>
-    now.value.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-);
 
 // Shared on every page by HandleInertiaRequests — the Academic Term
 // currently marked Active, if any. Scheduling can't run without one,
@@ -99,6 +87,33 @@ const conflicts = computed(() => props.overview.conflicts);
 const scope = computed(() => props.overview.scope);
 
 const roleLabel = computed(() => props.roles.join(', ') || 'No role assigned');
+
+// HERO COLOUR — follows the user's scope. A Dean/OIC (college scope) gets a
+// gradient built from their College's colour (Settings -> College Colors);
+// Administrator, Registrar, Assistant Dean and any college without a colour
+// use the red default. Text sits on the dark left side of the gradient, so the
+// stops are shaded toward black to keep white text readable even on yellow.
+const DEFAULT_HERO_COLOR = '#E11D2E';
+const HEX = /^#[0-9a-f]{6}$/i;
+const heroBase = computed(() => {
+    const collegeId = scope.value?.college_id;
+    const hex = collegeId != null ? page.props.collegeColors?.[collegeId] : null;
+    return HEX.test(hex ?? '') ? hex : DEFAULT_HERO_COLOR;
+});
+const shade = (hex, amount) => {
+    const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+    const mixed = [r, g, b].map((c) => Math.round(c * (1 - amount)));
+    return `rgb(${mixed[0]}, ${mixed[1]}, ${mixed[2]})`;
+};
+const heroGradient = computed(
+    () => `linear-gradient(120deg, ${shade(heroBase.value, 0.64)} 0%, ${shade(heroBase.value, 0.34)} 50%, ${shade(heroBase.value, 0.04)} 100%)`,
+);
+
+const heroPhoto = computed(() => user?.profile_photo_url || schoolBranding.value.logoUrl || null);
+const userInitial = computed(() => (user?.name || '?').trim().charAt(0).toUpperCase());
+
+const hour = new Date().getHours();
+const greeting = hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
 </script>
 
 <template>
@@ -136,94 +151,86 @@ const roleLabel = computed(() => props.roles.join(', ') || 'No role assigned');
             </span>
         </Link>
 
-        <!-- 1. Header -->
-        <div class="neu-card neu-spotlight relative mb-6 overflow-hidden rounded-2xl">
-            <!-- subtle blue/red gradient wash + decorative shapes -->
-            <div class="pointer-events-none absolute inset-0 overflow-hidden rounded-2xl">
-                <div
-                    class="absolute inset-0"
-                    :class="isDark
-                        ? 'bg-gradient-to-br from-blue-500/10 via-transparent to-red-500/10'
-                        : 'bg-gradient-to-br from-blue-50 via-transparent to-red-50/60'"
-                ></div>
-                <div
-                    class="absolute -right-10 -top-16 h-44 w-44 rounded-full bg-gradient-to-br"
-                    :class="isDark ? 'from-blue-500/20 via-blue-500/5 to-transparent' : 'from-blue-200/80 via-blue-100/40 to-transparent'"
-                ></div>
-                <div
-                    class="absolute -bottom-20 right-16 h-40 w-40 rounded-full bg-gradient-to-tr"
-                    :class="isDark ? 'from-red-500/20 via-red-500/5 to-transparent' : 'from-red-200/70 via-red-100/30 to-transparent'"
-                ></div>
-                <div
-                    class="absolute -left-10 bottom-0 h-28 w-28 rounded-full bg-gradient-to-tr border-4"
-                    :class="isDark ? 'from-blue-500/10 to-transparent border-blue-400/10' : 'from-blue-100/60 to-transparent border-blue-100'"
-                ></div>
-                <div
-                    class="absolute left-[38%] top-0 h-3 w-3 rounded-full bg-gradient-to-br"
-                    :class="isDark ? 'from-red-400/50 to-blue-400/30' : 'from-red-400/80 to-blue-300/60'"
-                ></div>
-                <div
-                    class="absolute left-[55%] bottom-4 h-20 w-20 rounded-full bg-gradient-to-r blur-xl"
-                    :class="isDark ? 'from-blue-500/10 to-red-500/10' : 'from-blue-200/40 to-red-200/40'"
-                ></div>
-            </div>
+        <!-- BACKDROP — same idea as My Schedule: campus photo (night photo in dark mode)
+             under a colour wash, fixed behind the page so the cards scroll over it. -->
+        <div
+            class="pointer-events-none fixed inset-0 -z-10 overflow-hidden bg-gradient-to-br"
+            :class="isDark ? 'from-[#0C2340] via-[#0B1B33] to-[#0B1220]' : 'from-[#7DD3FC] via-[#38BDF8] to-[#0284C7]'"
+            aria-hidden="true"
+        >
+            <img :src="isDark ? '/bg-dark.png' : '/bg.png'" alt="" class="h-full w-full scale-105 object-cover object-[right_bottom] blur-[3px]" />
             <div
-                class="relative flex flex-col gap-4 rounded-2xl p-6 transition-colors duration-300 sm:flex-row sm:items-center sm:justify-between"
-            >
-                <div>
-                    <div v-if="schoolBranding.name" class="mb-1 flex items-center gap-2">
-                        <img
-                            v-if="schoolBranding.logoUrl"
-                            :src="schoolBranding.logoUrl"
-                            alt=""
-                            class="h-5 w-5 rounded-full object-cover"
-                            @error="$event.target.style.display = 'none'"
-                        />
-                        <span class="text-xs font-semibold uppercase tracking-wide" :class="isDark ? 'text-slate-400' : 'text-slate-500'">
-                            {{ schoolBranding.name }}
-                        </span>
+                class="absolute inset-0 bg-gradient-to-r"
+                :class="isDark ? 'from-[#0B1220]/85 via-[#0B1220]/55 to-[#0B1220]/25' : 'from-[#1D9BF0]/60 via-[#38BDF8]/25 to-transparent'"
+            ></div>
+        </div>
+
+        <div class="dash-scope">
+        <!-- 1. Header (hero) -->
+        <section
+            class="relative mb-6 overflow-hidden rounded-3xl p-6 text-white shadow-xl ring-1 ring-white/30 sm:p-7"
+            :style="{ background: heroGradient }"
+        >
+            <div class="pointer-events-none absolute -right-16 -top-20 h-64 w-64 rounded-full bg-white/15 blur-3xl"></div>
+            <div class="pointer-events-none absolute -bottom-24 left-1/3 h-56 w-56 rounded-full bg-white/10 blur-3xl"></div>
+
+            <div class="relative flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+                <div class="flex items-center gap-5">
+                    <!-- The signed-in user's own profile photo; the school logo is only the fallback
+                         for accounts that haven't uploaded one, then their initial. -->
+                    <img
+                        v-if="heroPhoto"
+                        :src="heroPhoto"
+                        alt=""
+                        class="hidden h-24 w-24 flex-none rounded-full bg-white/10 object-cover ring-4 ring-white/30 sm:block"
+                        @error="$event.target.style.display = 'none'"
+                    />
+                    <span
+                        v-else
+                        class="hidden h-24 w-24 flex-none items-center justify-center rounded-full bg-white/15 text-4xl font-bold ring-4 ring-white/30 sm:flex"
+                    >{{ userInitial }}</span>
+                    <div class="min-w-0">
+                        <p v-if="schoolBranding.name" class="truncate text-sm font-medium text-white/75">{{ schoolBranding.name }}</p>
+                        <h1 class="mt-1 flex items-center gap-2 text-2xl font-bold tracking-tight sm:text-3xl">
+                            {{ greeting }}, {{ user.name }}!
+                            <InfoPopover
+                                title="Dashboard"
+                                :paragraphs="[
+                                    'A quick overview of scheduling status scoped to your role — summary counts, scheduling progress, and any conflicts that need attention.',
+                                ]"
+                                :bullets="[
+                                    'The KPI cards reflect the active academic term shown at the top right.',
+                                    'Conflicts listed here are visual indicators only — the server always re-validates before anything is saved.',
+                                    'What you see is scoped to your role: a Dean/OIC sees only their college\'s data.',
+                                ]"
+                            />
+                        </h1>
+                        <p class="mt-1 text-sm text-white/80">
+                            <span class="font-semibold text-white">{{ roleLabel }}</span>
+                            <span v-if="scope.label"> — {{ scope.label }}</span>
+                        </p>
+                        <p class="mt-2 flex flex-wrap items-center gap-2 text-sm text-white/70">
+                            <i class="pi pi-clock text-white/60"></i>
+                            <LiveClock :is-dark="true" />
+                        </p>
                     </div>
-                    <h1 class="text-xl font-bold flex items-center gap-2" :class="isDark ? 'text-white' : 'text-[#1E293B]'">
-                        Welcome, {{ user.name }}
-                        <InfoPopover
-                            title="Dashboard"
-                            :paragraphs="[
-                                'A quick overview of scheduling status scoped to your role — summary counts, scheduling progress, and any conflicts that need attention.',
-                            ]"
-                            :bullets="[
-                                'The KPI cards reflect the active academic term shown at the top right.',
-                                'Conflicts listed here are visual indicators only — the server always re-validates before anything is saved.',
-                                'What you see is scoped to your role: a Dean/OIC sees only their college\'s data.',
-                            ]"
-                        />
-                    </h1>
-                    <p class="mt-1" :class="isDark ? 'text-slate-400' : 'text-slate-500'">
-                        <span class="font-semibold" :class="isDark ? 'text-[#5B9CFF]' : 'text-[#2563EB]'">{{ roleLabel }}</span>
-                        <span v-if="scope.label"> — {{ scope.label }}</span>
-                    </p>
-                    <p class="mt-2 flex items-center gap-2 text-sm" :class="isDark ? 'text-slate-400' : 'text-slate-500'">
-                        <i class="pi pi-clock" :class="isDark ? 'text-slate-500' : 'text-slate-400'"></i>
-                        <span>{{ currentDateLabel }}</span>
-                        <span class="opacity-50">•</span>
-                        <span class="font-mono font-semibold tabular-nums" :class="isDark ? 'text-slate-200' : 'text-slate-700'">{{ currentTimeLabel }}</span>
-                    </p>
                 </div>
+
                 <div
                     v-if="activeAcademicTermLabel"
-                    class="neu-inset neu-glow flex items-center gap-2 self-start rounded-full px-4 py-2 sm:self-auto"
-                    :style="{ '--neu-glow-color': isDark ? 'rgba(52, 211, 153, 0.2)' : 'rgba(16, 185, 129, 0.2)' }"
+                    class="flex items-center gap-2 self-start rounded-full bg-black/25 px-4 py-2 ring-1 ring-white/25 backdrop-blur sm:self-auto"
                 >
                     <span class="relative flex h-2.5 w-2.5">
-                        <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75"></span>
-                        <span class="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-500"></span>
+                        <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-300 opacity-75"></span>
+                        <span class="relative inline-flex h-2.5 w-2.5 rounded-full bg-emerald-400"></span>
                     </span>
-                    <span class="text-sm font-semibold" :class="isDark ? 'text-emerald-300' : 'text-emerald-700'">Active</span>
-                    <span class="h-3 w-px" :class="isDark ? 'bg-emerald-400/25' : 'bg-emerald-200'"></span>
-                    <i class="pi pi-calendar" :class="isDark ? 'text-emerald-400/70' : 'text-emerald-500'"></i>
-                    <span class="text-sm font-semibold" :class="isDark ? 'text-emerald-300' : 'text-emerald-700'">{{ activeAcademicTermLabel }}</span>
+                    <span class="text-sm font-semibold text-emerald-200">Active</span>
+                    <span class="h-3 w-px bg-white/30"></span>
+                    <i class="pi pi-calendar text-white/70"></i>
+                    <span class="text-sm font-semibold">{{ activeAcademicTermLabel }}</span>
                 </div>
             </div>
-        </div>
+        </section>
 
         <!-- 2. Summary Cards -->
         <div class="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -264,13 +271,55 @@ const roleLabel = computed(() => props.roles.join(', ') || 'No role assigned');
 
         <!-- 3. Scheduling Progress + 4. Conflict Detection -->
         <div class="mb-6 grid grid-cols-1 gap-4 xl:grid-cols-2">
-            <SchedulingProgressCard :progress="progress" :is-dark="isDark" />
+            <SchedulingProgressCard :progress="progress" :scheduled="kpis.scheduled_subjects" :is-dark="isDark" />
             <ConflictPanel :conflicts="conflicts" :roles="roles" :is-dark="isDark" />
+        </div>
+
+        <!-- 5. Room Occupancy — which rooms have a class at the chosen day/time (defaults to right now) -->
+        <!-- + Faculty Today sidebar: who has a class on the selected day -->
+        <div class="mb-6 grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_21rem]">
+            <RoomOccupancyCard :is-dark="isDark" :accent="heroBase" @snapshot="occupancy = $event" />
+            <FacultyTodayCard
+                :is-dark="isDark"
+                :accent="heroBase"
+                :day="occupancy.day"
+                :minute="occupancy.minute"
+                :live="occupancy.live"
+                :rooms="occupancy.rooms"
+                :loading="occupancy.loading"
+            />
         </div>
 
         <!-- 9. Quick Actions -->
         <div class="mb-6">
             <QuickActions :is-dark="isDark" />
         </div>
+        </div>
     </AppLayout>
 </template>
+
+<style>
+/* Frosted-glass cards on the Dashboard only (scoped by .dash-scope) so the
+   campus-photo backdrop shows through, like My Schedule. Dialogs/popovers are
+   teleported to <body>, so they keep their normal solid look. */
+.dash-scope .neu-card {
+    background: rgba(255, 255, 255, 0.74);
+    border-color: rgba(255, 255, 255, 0.75);
+    box-shadow: 0 10px 30px -12px rgba(2, 132, 199, 0.28);
+    -webkit-backdrop-filter: blur(14px);
+    backdrop-filter: blur(14px);
+}
+.dark .dash-scope .neu-card {
+    background: rgba(11, 18, 32, 0.6);
+    border-color: rgba(255, 255, 255, 0.1);
+    box-shadow: 0 10px 30px -12px rgba(0, 0, 0, 0.55);
+}
+.dash-scope .neu-card .neu-card {
+    /* Quick-action tiles sit inside a glass card; keep them a touch lighter so they read as buttons. */
+    background: rgba(255, 255, 255, 0.55);
+    box-shadow: none;
+}
+.dark .dash-scope .neu-card .neu-card {
+    background: rgba(255, 255, 255, 0.06);
+}
+</style>

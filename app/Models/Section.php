@@ -219,6 +219,48 @@ class Section extends Model
     }
 
     /**
+     * Sections that actually matter to a user's SCHEDULING numbers
+     * (Scheduling Dashboard / main Dashboard counts).
+     *
+     * visibleTo() deliberately lets an Assistant Dean see every
+     * Section so they can open it and schedule GenEd/Minor into it.
+     * That is right for navigation, but wrong for COUNTING: a Section
+     * with none of the user's subjects in it shouldn't inflate their
+     * "Sections" card. For anyone with Assistant Dean authority this
+     * keeps only Sections that (a) contain at least one in-scope
+     * placement (SectionSubject::scopeVisibleTo()) or (b) belong to
+     * their own College (dual-role Dean/OIC). Everyone else falls back
+     * to visibleTo() unchanged.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder<Section>  $query
+     * @return \Illuminate\Database\Eloquent\Builder<Section>
+     */
+    public function scopeSchedulingScopeFor($query, ?\App\Models\User $user)
+    {
+        if (\App\Support\AccessScope::isUnrestricted($user)) {
+            return $query;
+        }
+
+        if (! \App\Support\AccessScope::isAssistantDean($user)) {
+            return $query->visibleTo($user);
+        }
+
+        return $query->where(function ($inner) use ($user) {
+            $inner->whereHas('sectionSubjects', function ($placements) use ($user) {
+                $placements->visibleTo($user);
+            });
+
+            if (\App\Support\AccessScope::isCollegeScoped($user)) {
+                $collegeId = \App\Support\AccessScope::collegeId($user) ?? -1;
+
+                $inner->orWhereHas('major.department', function ($department) use ($collegeId) {
+                    $department->where('college_id', $collegeId);
+                });
+            }
+        });
+    }
+
+    /**
      * SCHEDULING-PROGRESS INDICATOR ("Fully/Partially Scheduled
      * (x/y)") — counts distinct SUBJECTS, not section_subjects rows.
      *

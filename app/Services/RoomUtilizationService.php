@@ -242,6 +242,71 @@ class RoomUtilizationService
     }
 
     /**
+     * Weekly bookings for MANY Rooms in one query — powers the Rooms
+     * page's Floors x Days "Room Grid" so every room can be compared at
+     * a glance without N timetableForRoom() round-trips.
+     *
+     * Same placement rules as timetableForRoom()/summarizeRooms() (Active
+     * Academic Term, scheduled rows only, merged Irregular-section
+     * riders folded into their host's `section` label), so this grid can
+     * never disagree with the Room Schedule Details modal.
+     *
+     * @param  \Illuminate\Support\Collection<int, Room>  $rooms
+     * @return array<int, array<string, list<array{id:int,s:string,e:string,subject:string,section:string,faculty:string}>>>
+     *         room_id => Day => bookings sorted by start time
+     */
+    public function weeklyBlocksForRooms(Collection $rooms): array
+    {
+        $schoolYear = SchoolYear::active();
+        $days = $schoolYear ? $schoolYear->allowedDays() : SchoolYear::DEFAULT_CLASS_DAYS;
+
+        $placementsByRoom = $this->activeTermPlacements([
+            'subject:id,subject_code',
+            'section:id,section_code',
+            'faculty:id,first_name,last_name',
+            'mergedPlacements.section:id,section_code',
+        ])
+            ->whereIn('room_id', $rooms->pluck('id')->all())
+            ->get()
+            ->groupBy('room_id');
+
+        $out = [];
+
+        foreach ($rooms as $room) {
+            $placements = $placementsByRoom->get($room->id, collect());
+            $byDay = [];
+
+            foreach ($days as $day) {
+                $byDay[$day] = $placements
+                    ->filter(fn (SectionSubject $p) => $this->placementRunsOnDay($p, $day))
+                    ->sortBy('start_time')
+                    ->map(function (SectionSubject $p) {
+                        $sections = collect([$p->section?->section_code])
+                            ->merge($p->mergedPlacements->pluck('section.section_code'))
+                            ->filter()
+                            ->unique()
+                            ->values();
+
+                        return [
+                            'id' => $p->id,
+                            's' => substr((string) $p->start_time, 0, 5),
+                            'e' => substr((string) $p->end_time, 0, 5),
+                            'subject' => $p->subject?->subject_code ?? '—',
+                            'section' => $sections->isNotEmpty() ? $sections->implode(' & ') : '—',
+                            'faculty' => $p->faculty?->full_name ?? 'Unassigned',
+                        ];
+                    })
+                    ->values()
+                    ->all();
+            }
+
+            $out[$room->id] = $byDay;
+        }
+
+        return $out;
+    }
+
+    /**
      * Bucket a Utilization % into the four indicator tiers used
      * throughout the Rooms page and Auto Scheduler ranking.
      */

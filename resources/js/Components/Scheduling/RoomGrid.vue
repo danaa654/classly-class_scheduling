@@ -22,6 +22,7 @@ import Tag from 'primevue/tag';
 import Button from 'primevue/button';
 import ProgressSpinner from 'primevue/progressspinner';
 import LoadingSkeleton from '@/Components/LoadingSkeleton.vue';
+import { useCollegeColors, collegeSoftStyle } from '@/composables/useCollegeColors';
 import { useToast } from 'primevue/usetoast';
 import Swal from 'sweetalert2';
 
@@ -429,27 +430,40 @@ const blockAuthState = (block) => {
     return block.can_edit ? 'authorized' : 'locked';
 };
 
-const blockClass = (block) => {
-    // DARK MODE — the light pastel fills + dark-coloured text below are
-    // fine on the light theme but glare / lose contrast on the dark grid.
-    // "rg-dark-block" also lets the <style> block at the bottom recolour
-    // the small red/amber warning lines inside a block.
-    if (props.isDark) {
-        if (blockHasConflict(block)) return 'rg-dark-block bg-red-500/20 border-2 border-red-400 text-red-100 cursor-grab hover:border-red-300';
-        const darkState = blockAuthState(block);
-        if (darkState === 'current') return 'rg-dark-block bg-blue-500/20 border border-blue-400/60 text-blue-100 cursor-grab hover:border-blue-300';
-        if (darkState === 'authorized') return 'rg-dark-block bg-emerald-500/15 border border-emerald-400/60 border-dashed text-emerald-100 cursor-grab hover:border-emerald-300';
-        if (darkState === 'finalized') return 'rg-dark-block bg-amber-500/15 border border-amber-400/60 text-amber-100 cursor-not-allowed';
-        if (darkState === 'out_of_category') return 'rg-dark-block bg-slate-500/15 border border-slate-400/50 border-dotted text-slate-300 cursor-not-allowed';
-        return 'rg-dark-block bg-slate-500/20 border border-slate-400/50 text-slate-300 cursor-not-allowed';
-    }
-    if (blockHasConflict(block)) return 'bg-red-50 border-2 border-red-500 text-red-700 cursor-grab hover:border-red-600';
+// COLLEGE COLORS — a block is colored by the College that owns its Section
+// (Settings -> College Colors), e.g. a BSIT block is CCS yellow. The color
+// itself is applied inline by blockStyle() below; blockClass() only carries
+// the non-color parts (border style, cursor) so the four auth states stay
+// distinguishable WITHOUT overriding the college color:
+//   current        -> solid border, click to edit
+//   authorized     -> dashed border, draggable
+//   finalized      -> solid border + lock icon, not draggable
+//   locked / out_of_category -> dotted border, faded, not draggable
+// A conflict still wins and shows red so it can't be missed.
+const { colorFor } = useCollegeColors();
+
+const blockStyle = (block) => {
+    if (!block || blockHasConflict(block)) return {};
+    const style = collegeSoftStyle(colorFor(block.section_college_id), props.isDark);
     const state = blockAuthState(block);
-    if (state === 'current') return 'bg-blue-50 border border-blue-200 text-blue-700 cursor-grab hover:border-blue-400';
-    if (state === 'authorized') return 'bg-emerald-50 border border-emerald-300 border-dashed text-emerald-700 cursor-grab hover:border-emerald-500';
-    if (state === 'finalized') return 'bg-amber-50 border border-amber-300 text-amber-800 cursor-not-allowed';
-    if (state === 'out_of_category') return 'bg-slate-50 border border-slate-300 border-dotted text-slate-500 cursor-not-allowed';
-    return 'bg-slate-100 border border-slate-300 text-slate-500 cursor-not-allowed';
+    if (state === 'locked' || state === 'out_of_category') style.opacity = 0.65;
+    return style;
+};
+
+const blockClass = (block) => {
+    // DARK MODE — "rg-dark-block" lets the <style> block at the bottom
+    // recolour the small red/amber warning lines inside a block.
+    const dark = props.isDark ? 'rg-dark-block ' : '';
+    if (blockHasConflict(block)) {
+        return props.isDark
+            ? 'rg-dark-block bg-red-500/20 border-2 border-red-400 text-red-100 cursor-grab hover:border-red-300'
+            : 'bg-red-50 border-2 border-red-500 text-red-700 cursor-grab hover:border-red-600';
+    }
+    const state = blockAuthState(block);
+    if (state === 'current') return `${dark}border cursor-grab hover:shadow-md`;
+    if (state === 'authorized') return `${dark}border border-dashed cursor-grab hover:shadow-md`;
+    if (state === 'finalized') return `${dark}border cursor-not-allowed`;
+    return `${dark}border border-dotted cursor-not-allowed`; // out_of_category / locked
 };
 
 const blockTitle = (block) => {
@@ -530,6 +544,10 @@ const sectionGhostBlocks = computed(() => {
     const raw = [];
     props.rows.forEach((row) => {
         if (needsRoomPlacement(row)) return; // not scheduled yet — nothing to x-ray
+        // Practicum / Online rows are exempt from needsRoomPlacement() (they never
+        // get a Room) and can legitimately have no Days/Time either — skip those
+        // instead of letting toMinutes(null) throw and break the whole overlay.
+        if (!row.start_time || !row.end_time || !Array.isArray(row.days) || !row.days.length) return;
         if (row.room_id === selectedRoom.value.id) return; // already drawn as a real block below — no need to ghost it too
 
         const startMin = toMinutes(row.start_time);
@@ -1280,7 +1298,7 @@ const assignForm = ref({
     editing: false, // true when opened by clicking an existing block, not dragging a new one
 });
 
-const meetingsOptions = [1, 2].map((n) => ({ label: `${n}x / week`, value: n }));
+const meetingsOptions = [1, 2, 3].map((n) => ({ label: `${n}x / week`, value: n }));
 
 // Faculty ranking — same tiered recommendation source the Subjects tab's
 // FacultyRecommendationSelector uses (RecommendationService, scoped by
@@ -1592,6 +1610,40 @@ const isQualifiedFor = (faculty, subject) => {
 // modal — and the Subjects tab itself — groups them under "College of
 // Computer Studies Faculty". Falls back to a flat, ungrouped list
 // (previous behavior) while no subject/row is known yet.
+// FREE / BUSY INDICATOR — for the Day(s) + start time currently set in
+// the modal (the cell the Registrar dropped on, plus any extra selected
+// days and the live Hours/Meetings length), is this Faculty already
+// teaching something that overlaps? Uses the schedule_slots the server
+// sends with every activeFaculty entry (all Sections of this term — the
+// same scope Save's Faculty Conflict check uses). Ignores the row being
+// edited and same-subject classes (a shared/combined class is allowed).
+// 'busy' => red blink, 'free' => green blink, null => no indicator.
+const facultySlotStatus = (faculty) => {
+    const { row, rowIndex, selectedDays } = assignForm.value;
+    if (!row || rowIndex == null || !selectedDays.length || !Array.isArray(faculty.schedule_slots)) return null;
+
+    const step = intervalMinutes.value;
+    const totalMinutes = (assignForm.value.hoursPerWeek || 0) * 60;
+    const perMeetingMinutes = Math.max(step, Math.round((totalMinutes / assignForm.value.meetingsPerWeek) / step) * step);
+    const newStart = toMinutes(hourRows.value[rowIndex]);
+    const newEnd = newStart + perMeetingMinutes;
+
+    const busy = faculty.schedule_slots.some((slot) => {
+        if (slot.id === row.id) return false;
+        // Already merged together (host/rider) — intentionally the same class.
+        if (slot.merged_into === row.id || (row.merged_into_section_subject_id && (row.merged_into_section_subject_id === slot.id || row.merged_into_section_subject_id === slot.merged_into))) return false;
+        // Combinable shared class: same subject AND same room as the one being
+        // scheduled (dropping onto that class's own cell). Same subject in a
+        // DIFFERENT room is a real double-booking for this Faculty.
+        if (slot.subject_id === (row.subject_id ?? row.subject?.id) && slot.room_id === selectedRoom.value?.id) return false;
+        const slotDays = String(slot.days || '').split(',').map((d) => d.trim());
+        if (!selectedDays.some((d) => slotDays.includes(d))) return false;
+        return toMinutes(slot.start_time) < newEnd && toMinutes(slot.end_time) > newStart;
+    });
+
+    return busy ? 'busy' : 'free';
+};
+
 const facultyOptions = computed(() => {
     const subject = assignForm.value.row?.subject ?? null;
     const recommended = new Map(facultyRecommendations.value.map((f) => [f.id, f]));
@@ -1605,6 +1657,7 @@ const facultyOptions = computed(() => {
             badge: rec?.badge ?? null,
             score: rec?.score ?? null,
             college: rec?.college ?? f.college_name ?? null,
+            slotStatus: facultySlotStatus(f),
         };
     });
 
@@ -1647,9 +1700,30 @@ const facultyOptions = computed(() => {
     return groups;
 });
 
+// SPLIT-DELIVERY SCHEDULING — hours this ONE row has to add up to per week.
+// A split row (e.g. CC101 split into Online 2h + Face-to-Face 3h) only covers
+// its own split_hours share, not the subject's full lecture + laboratory
+// total. Same rule as SectionSubjectController::updateSchedule() and
+// SectionSubjects/Show.vue's weeklyContactHours(), so the Room Grid's
+// default Hours/Week, its max, and its "Weekly Hours Mismatch" warning all
+// agree with what the server will actually accept. A never-split row has
+// split_hours = null and falls through to the subject total as before.
+const requiredHoursFor = (row) => {
+    if (row?.split_hours != null && Number(row.split_hours) > 0) {
+        return Number(row.split_hours);
+    }
+    const subject = row?.subject || {};
+    return (Number(subject.lecture_hours) || 0) + (Number(subject.laboratory_hours) || 0) || 3;
+};
+
+// Label for the Hours/Week hint: "Face-to-Face share of CC101" vs the
+// ordinary "Curriculum load for CC101".
+const assignIsSplit = computed(() => assignForm.value.row?.split_hours != null);
+const assignSplitLabel = computed(() => (assignForm.value.row?.delivery_mode === 'online' ? 'Online' : 'Face-to-Face'));
+
 const openAssignModal = async (row, day, rowIndex) => {
     const subject = row.subject || {};
-    const defaultHours = (Number(subject.lecture_hours) || 0) + (Number(subject.laboratory_hours) || 0) || 3;
+    const defaultHours = requiredHoursFor(row);
 
     // SHARED CLASS — if this exact slot is already occupied by a
     // DIFFERENT section's class for the SAME subject, prefill the
@@ -1746,9 +1820,14 @@ const openAssignModal = async (row, day, rowIndex) => {
         const meetingsPerWeek = patternDays.length || 1;
         const perMeetingHours = ((toMinutes(top.time.end_time) - toMinutes(top.time.start_time)) || 60) / 60;
 
+        // A split row keeps its own split_hours share: the sibling's pattern
+        // may be an UNSPLIT 5-hr class, and copying that would put the
+        // 5 hrs right back that the split just removed.
+        const siblingHours = Math.round(perMeetingHours * meetingsPerWeek * 100) / 100;
+
         assignForm.value = {
             ...assignForm.value,
-            hoursPerWeek: Math.round(perMeetingHours * meetingsPerWeek * 100) / 100,
+            hoursPerWeek: row.split_hours != null ? assignForm.value.hoursPerWeek : siblingHours,
             meetingsPerWeek,
             selectedDays: patternDays.includes(day) ? [...patternDays] : [day],
             facultyId: top.faculty?.id ?? assignForm.value.facultyId,
@@ -1769,8 +1848,7 @@ const openEditModal = (block) => {
     const row = props.rows.find((r) => r.id === block.section_subject_id);
     if (!row) return;
 
-    const subject = row.subject || {};
-    const requiredHours = (Number(subject.lecture_hours) || 0) + (Number(subject.laboratory_hours) || 0) || 3;
+    const requiredHours = requiredHoursFor(row);
     const rowDays = (row.days || []);
     const meetingsPerWeek = rowDays.length || 1;
     const perMeetingHours = ((toMinutes(row.end_time) - toMinutes(row.start_time)) || 60) / 60;
@@ -2332,8 +2410,54 @@ const removeAssignment = async () => {
 
         <!-- MAIN AREA: Selected room's weekly timetable -->
         <div class="flex-1 min-w-0">
-            <div v-if="!selectedRoom" class="h-64 flex items-center justify-center text-slate-400 text-sm neu-inset rounded-xl">
-                Select a room on the left to view and schedule its weekly timetable.
+            <div v-if="!selectedRoom" class="neu-inset flex min-h-[20rem] flex-col items-center justify-center rounded-xl px-6 py-10 text-center">
+                <span class="inline-flex h-14 w-14 items-center justify-center rounded-2xl" :class="isDark ? 'bg-blue-500/20 text-blue-300' : 'bg-blue-50 text-blue-500'">
+                    <i class="pi pi-calendar-plus text-2xl"></i>
+                </span>
+                <h3 class="mt-4 text-lg font-semibold" :class="isDark ? 'text-white' : 'text-[#1E293B]'">Pick a room to start scheduling</h3>
+                <p class="mt-1 max-w-md text-sm" :class="isDark ? 'text-slate-400' : 'text-slate-500'">
+                    Choose a room from the left to open its weekly timetable, then drag subjects onto open slots.
+                </p>
+
+                <!-- Quick picks: the top recommended rooms, one click away -->
+                <div v-if="recommendedRooms.length" class="mt-5 flex flex-wrap items-center justify-center gap-2">
+                    <span class="text-xs font-semibold uppercase tracking-wide text-slate-400">Quick pick</span>
+                    <button
+                        v-for="room in recommendedRooms.slice(0, 4)"
+                        :key="room.id"
+                        type="button"
+                        class="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border px-3 py-1 text-xs font-semibold transition-colors"
+                        :class="isDark ? 'border-white/15 text-slate-200 hover:border-blue-400 hover:bg-blue-500/20' : 'border-slate-200 bg-white text-slate-700 hover:border-blue-300 hover:bg-blue-50'"
+                        @click="selectRoom(room)"
+                    >
+                        <span class="inline-block h-1.5 w-1.5 rounded-full" :class="roomTypeDotClass(room)"></span>
+                        {{ roomLabel(room) }}
+                    </button>
+                </div>
+
+                <!-- How it works -->
+                <ol class="mt-7 grid w-full max-w-2xl grid-cols-1 gap-3 text-left sm:grid-cols-3">
+                    <li class="rounded-xl p-3" :class="isDark ? 'bg-white/5' : 'bg-white/70'">
+                        <span class="inline-flex h-6 w-6 items-center justify-center rounded-full bg-blue-500 text-xs font-bold text-white">1</span>
+                        <p class="mt-2 text-sm font-semibold" :class="isDark ? 'text-slate-100' : 'text-slate-700'">Select a room</p>
+                        <p class="text-xs text-slate-400">Recommended rooms match the section's college and subject type.</p>
+                    </li>
+                    <li class="rounded-xl p-3" :class="isDark ? 'bg-white/5' : 'bg-white/70'">
+                        <span class="inline-flex h-6 w-6 items-center justify-center rounded-full bg-violet-500 text-xs font-bold text-white">2</span>
+                        <p class="mt-2 text-sm font-semibold" :class="isDark ? 'text-slate-100' : 'text-slate-700'">Drag a subject</p>
+                        <p class="text-xs text-slate-400">Pull it from Unscheduled Subjects onto a free slot.</p>
+                    </li>
+                    <li class="rounded-xl p-3" :class="isDark ? 'bg-white/5' : 'bg-white/70'">
+                        <span class="inline-flex h-6 w-6 items-center justify-center rounded-full bg-emerald-500 text-xs font-bold text-white">3</span>
+                        <p class="mt-2 text-sm font-semibold" :class="isDark ? 'text-slate-100' : 'text-slate-700'">Set faculty</p>
+                        <p class="text-xs text-slate-400">Click a placed block to edit its faculty, hours or days.</p>
+                    </li>
+                </ol>
+
+                <p class="mt-5 inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold" :class="unscheduledSubjects.length ? (isDark ? 'bg-amber-500/20 text-amber-300' : 'bg-amber-100 text-amber-800') : (isDark ? 'bg-emerald-500/20 text-emerald-300' : 'bg-emerald-100 text-emerald-700')">
+                    <i :class="unscheduledSubjects.length ? 'pi pi-clock' : 'pi pi-check-circle'"></i>
+                    {{ unscheduledSubjects.length ? `${unscheduledSubjects.length} subject${unscheduledSubjects.length === 1 ? '' : 's'} still unscheduled` : 'Every subject is placed' }}
+                </p>
             </div>
             <div v-else>
                 <div class="flex items-center justify-between mb-3">
@@ -2342,7 +2466,17 @@ const removeAssignment = async () => {
                             {{ roomLabel(selectedRoom) }}
                             <Tag v-if="isManualOverride" value="Manual Room Override" severity="warning" class="!text-[10px]" />
                         </h3>
-                        <p class="text-xs text-slate-400">{{ selectedRoom.room_type }} · Capacity {{ selectedRoom.capacity }}</p>
+                        <div class="mt-1 flex flex-wrap items-center gap-1.5">
+                            <span
+                                class="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-semibold"
+                                :class="selectedRoom.room_type === 'Laboratory'
+                                    ? (isDark ? 'bg-violet-500/20 text-violet-300' : 'bg-violet-100 text-violet-700')
+                                    : (isDark ? 'bg-blue-500/20 text-blue-300' : 'bg-blue-100 text-blue-700')"
+                            >{{ selectedRoom.room_type }}</span>
+                            <span class="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-semibold" :class="isDark ? 'bg-white/10 text-slate-300' : 'bg-slate-100 text-slate-600'">
+                                <i class="pi pi-users text-[10px]"></i>{{ selectedRoom.capacity }} seats
+                            </span>
+                        </div>
                     </div>
                     <div class="flex items-center gap-2">
                         <button
@@ -2436,6 +2570,7 @@ const removeAssignment = async () => {
                                         v-else-if="blockAt(day, rowIndex)"
                                         class="absolute inset-0.5 rounded-md px-2 py-1 overflow-hidden text-[13px] leading-tight group"
                                         :class="blockClass(blockAt(day, rowIndex))"
+                                        :style="blockStyle(blockAt(day, rowIndex))"
                                         :draggable="blockAt(day, rowIndex).can_edit"
                                         :title="blockTitle(blockAt(day, rowIndex))"
                                         @dragstart="onDragStartBlock(blockAt(day, rowIndex))"
@@ -2578,7 +2713,8 @@ const removeAssignment = async () => {
                         <label class="text-xs font-medium text-slate-500 mb-1 block">Hours / Week</label>
                         <InputNumber v-model="assignForm.hoursPerWeek" :min="minHoursPerWeek" :max="assignForm.requiredHours" :step="0.5" showButtons class="w-full" />
                         <p class="text-[11px] text-slate-400 mt-1">
-                            Curriculum load for {{ assignForm.row?.subject?.subject_code ?? 'this subject' }}: up to
+                            <template v-if="assignIsSplit">{{ assignSplitLabel }} share of {{ assignForm.row?.subject?.subject_code ?? 'this subject' }} (split): </template>
+                            <template v-else>Curriculum load for {{ assignForm.row?.subject?.subject_code ?? 'this subject' }}: up to</template>
                             <button
                                 v-if="!assignHoursValid"
                                 type="button"
@@ -2692,7 +2828,18 @@ const removeAssignment = async () => {
                         <template #option="{ option }">
                             <div class="flex flex-col gap-0.5 py-0.5 w-full" :class="{ 'italic text-slate-400': option.disabled }">
                                 <div class="flex items-center gap-2">
+                                    <span
+                                        v-if="option.slotStatus"
+                                        class="faculty-slot-dot"
+                                        :class="option.slotStatus === 'busy' ? 'faculty-slot-dot--busy' : 'faculty-slot-dot--free'"
+                                        :title="option.slotStatus === 'busy' ? 'Already has a class at this day/time' : 'Free at this day/time'"
+                                    ></span>
                                     <span>{{ option.full_name }}</span>
+                                    <span
+                                        v-if="option.slotStatus"
+                                        class="text-[10px] font-medium"
+                                        :class="option.slotStatus === 'busy' ? 'text-red-500' : 'text-green-600'"
+                                    >{{ option.slotStatus === 'busy' ? 'Busy' : 'Free' }}</span>
                                     <Tag
                                         v-if="option.badge"
                                         :value="option.badge"
@@ -2771,6 +2918,22 @@ const removeAssignment = async () => {
 </template>
 
 <style>
+/* Faculty free/busy indicator in the Schedule Subject modal's Faculty list */
+.faculty-slot-dot { width: 0.6rem; height: 0.6rem; border-radius: 9999px; flex-shrink: 0; }
+.faculty-slot-dot--free { background: #22c55e; animation: faculty-blink-green 1.2s ease-in-out infinite; }
+.faculty-slot-dot--busy { background: #ef4444; animation: faculty-blink-red 1.2s ease-in-out infinite; }
+@keyframes faculty-blink-green {
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.6); }
+    50% { opacity: 0.35; box-shadow: 0 0 0 5px rgba(34, 197, 94, 0); }
+}
+@keyframes faculty-blink-red {
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.6); }
+    50% { opacity: 0.35; box-shadow: 0 0 0 5px rgba(239, 68, 68, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .faculty-slot-dot--free, .faculty-slot-dot--busy { animation: none; }
+}
+
 /* Dark mode — Room Grid blocks. Warning lines inside a block use
    light-theme reds/ambers that vanish on the dark fill, and the striped
    "already scheduled in another room" ghost used dark violet text. */

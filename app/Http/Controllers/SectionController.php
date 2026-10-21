@@ -135,7 +135,7 @@ class SectionController extends Controller
 
         $sectionsQuery = Section::query()
             ->visibleTo($request->user())
-            ->with(['major:id,name,code', 'curriculum:id,code,name,major_id'])
+            ->with(['major:id,name,code,department_id', 'major.department:id,college_id', 'major.department.college:id,code,color', 'curriculum:id,code,name,major_id'])
             ->when($term !== 'all', function ($query) use ($term) {
                 [$termYear, $termSemester] = array_pad(explode('|', $term, 2), 2, null);
 

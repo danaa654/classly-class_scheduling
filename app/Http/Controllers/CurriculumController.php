@@ -75,7 +75,12 @@ class CurriculumController extends Controller
 
         $curriculums = Curriculum::query()
             ->withTrashed()
-            ->with(['major' => fn ($query) => $query->withTrashed()])
+            // major -> department -> college is loaded (even if since
+            // soft-deleted) so each row can show its College's color
+            // (see College::color — same color the Room/Section Grid use).
+            ->with(['major' => fn ($query) => $query->withTrashed()
+                ->with(['department' => fn ($department) => $department->withTrashed()
+                    ->with(['college' => fn ($college) => $college->withTrashed()])])])
             ->when($search !== '', function ($query) use ($search) {
                 $query->where(function ($inner) use ($search) {
                     $inner->where('code', 'like', "%{$search}%")

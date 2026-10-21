@@ -568,7 +568,7 @@ class SectionSubjectController extends Controller implements HasMiddleware
         // while to open. Mirrors how $roomUtilization below already
         // batches per-Room figures via summarizeRooms() instead of
         // calling into RoomUtilizationService per Room.
-        $activeFaculty = function () {
+        $activeFaculty = function () use ($section) {
             $activeFacultyList = Faculty::query()
                 ->where('status', 'Active')
                 ->with(['subjects:id', 'college:id,name,short_name,counts_as_gened'])
@@ -577,6 +577,21 @@ class SectionSubjectController extends Controller implements HasMiddleware
                 ->get(['id', 'first_name', 'middle_name', 'last_name', 'suffix', 'college_id', 'max_teaching_units']);
 
             $facultyCurrentLoads = $this->workloadService->currentLoadsFor($activeFacultyList);
+
+            // FREE/BUSY INDICATOR (Room Grid "Schedule Subject" modal) —
+            // every already-placed class per Faculty across ALL Sections
+            // of this Section's own term (same scope findFacultyConflict()
+            // uses on Save), fetched in ONE batched query so the modal can
+            // flag a Faculty green/red for the dropped Day + start time
+            // without a request per option.
+            $facultySlots = SectionSubject::query()
+                ->whereIn('faculty_id', $activeFacultyList->pluck('id'))
+                ->whereIn('section_id', $this->conflictService->sectionTermSectionIds($section))
+                ->whereNotNull('days')
+                ->whereNotNull('start_time')
+                ->whereNotNull('end_time')
+                ->get(['id', 'faculty_id', 'subject_id', 'room_id', 'merged_into_section_subject_id', 'days', 'start_time', 'end_time'])
+                ->groupBy('faculty_id');
 
             return $activeFacultyList->map(fn (Faculty $faculty) => [
                 'id' => $faculty->id,
@@ -611,6 +626,15 @@ class SectionSubjectController extends Controller implements HasMiddleware
                 // manual pick is before assigning them.
                 'current_load' => $facultyCurrentLoads[$faculty->id] ?? 0,
                 'max_teaching_units' => $faculty->max_teaching_units,
+                'schedule_slots' => ($facultySlots[$faculty->id] ?? collect())->map(fn ($slot) => [
+                    'id' => $slot->id,
+                    'subject_id' => $slot->subject_id,
+                    'room_id' => $slot->room_id,
+                    'merged_into' => $slot->merged_into_section_subject_id,
+                    'days' => $slot->days,
+                    'start_time' => substr((string) $slot->start_time, 0, 5),
+                    'end_time' => substr((string) $slot->end_time, 0, 5),
+                ])->values(),
             ]);
         };
 
@@ -1737,6 +1761,155 @@ class SectionSubjectController extends Controller implements HasMiddleware
      * global search, scored via RecommendationService::roomOptionsForSelector()).
      */
     /**
+     * Availability Check modal — ONE read that backs the Section
+     * Subjects page's "Check Availability" popup, so a scheduler can
+     * compare every Faculty member's and every Room's weekly timetable
+     * (and workload) without leaving this page for the Faculty/Room
+     * pages.
+     *
+     * Read-only. Scoping is identical to busyTimes()/roomSchedule():
+     * this Section's OWN Academic Year + Semester
+     * (ScheduleConflictService::sectionTermSectionIds()), with the
+     * row being edited (plus its merge group — mergeExclusionIds())
+     * left out so the row never "conflicts with itself" and the
+     * workload figures show the picture BEFORE this assignment.
+     * No status filter on the timetable blocks, matching
+     * overlapQuery() — a Draft/auto-generated booking blocks a slot
+     * exactly like a Scheduled one does when Save validates.
+     *
+     * Workload counts mirror FacultyWorkloadService (Scheduled/Draft,
+     * merged riders excluded). Faculty "units" come straight from
+     * currentLoadsFor() so they can never disagree with the Faculty
+     * dropdown's own "x / y units" label.
+     *
+     * Blocks are expanded to one entry per Day token:
+     *   { id, d: 'Mon', s: '08:00', e: '09:30', l: 'CS101 · BSIT-2A' }
+     * `id` is the SectionSubject id so the frontend can swap in an
+     * unsaved, in-page edit of that same row (see AvailabilityModal.vue).
+     */
+    public function availability(Request $request, Section $section): JsonResponse
+    {
+        $subject = null;
+        if ($request->filled('section_subject_id')) {
+            $subject = SectionSubject::query()
+                ->where('section_id', $section->id)
+                ->find((int) $request->query('section_subject_id'));
+        }
+
+        $excluding = $subject ? $this->conflictService->mergeExclusionIds($subject) : [];
+
+        $placements = SectionSubject::query()
+            ->whereIn('section_id', $this->conflictService->sectionTermSectionIds($section))
+            ->whereNotIn('id', $excluding)
+            ->where(function ($query) {
+                $query->whereNotNull('faculty_id')->orWhereNotNull('room_id');
+            })
+            ->with(['subject:id,subject_code', 'section:id,section_code'])
+            ->get(['id', 'section_id', 'subject_id', 'faculty_id', 'room_id', 'days', 'start_time', 'end_time', 'status', 'merged_into_section_subject_id']);
+
+        $facultyBlocks = [];
+        $roomBlocks = [];
+        $facultySubjects = [];
+        $roomClasses = [];
+
+        foreach ($placements as $placement) {
+            $isRider = $placement->merged_into_section_subject_id !== null;
+            $counted = ! $isRider && in_array($placement->status, ['Scheduled', 'Draft'], true);
+            $timed = $placement->days && $placement->start_time && $placement->end_time;
+
+            if ($counted) {
+                if ($placement->faculty_id) {
+                    $facultySubjects[$placement->faculty_id][$placement->section_id.'-'.$placement->subject_id] = true;
+                }
+                if ($placement->room_id && $timed) {
+                    $roomClasses[$placement->room_id] = ($roomClasses[$placement->room_id] ?? 0) + 1;
+                }
+            }
+
+            // A merged rider duplicates its host's slot by design
+            // (see mergeExclusionIds()) — the host row already
+            // contributes the block.
+            if ($isRider || ! $timed) {
+                continue;
+            }
+
+            $label = trim(($placement->subject?->subject_code ?? 'Class').' · '.($placement->section?->section_code ?? ''), ' ·');
+
+            foreach (array_filter(array_map('trim', explode(',', (string) $placement->days))) as $day) {
+                $block = [
+                    'id' => $placement->id,
+                    'd' => $day,
+                    's' => substr((string) $placement->start_time, 0, 5),
+                    'e' => substr((string) $placement->end_time, 0, 5),
+                    'l' => $label,
+                ];
+
+                if ($placement->faculty_id) {
+                    $facultyBlocks[$placement->faculty_id][] = $block;
+                }
+                if ($placement->room_id) {
+                    $roomBlocks[$placement->room_id][] = $block;
+                }
+            }
+        }
+
+        $facultyList = Faculty::query()
+            ->where('status', 'Active')
+            ->with(['subjects:id', 'college:id,name,short_name,counts_as_gened'])
+            ->orderBy('last_name')
+            ->orderBy('first_name')
+            ->get(['id', 'first_name', 'middle_name', 'last_name', 'suffix', 'college_id', 'max_teaching_units']);
+
+        $loads = $this->workloadService->currentLoadsFor($facultyList);
+
+        $faculty = $facultyList->map(fn (Faculty $member) => [
+            'id' => $member->id,
+            'name' => $member->full_name,
+            'college_id' => $member->college_id,
+            'college_name' => $member->college?->short_name ?? $member->college?->name ?? 'General Education',
+            // Scope inputs — the frontend mirrors Show.vue's isQualifiedFor()
+            // with these (explicit `qualified` wins, then College / GenEd pool).
+            'faculty_category' => $member->faculty_category,
+            'college_counts_as_gened' => (bool) $member->college?->counts_as_gened,
+            'subject_count' => count($facultySubjects[$member->id] ?? []),
+            'current_load' => $loads[$member->id] ?? 0,
+            'max_units' => $member->max_teaching_units,
+            'qualified' => $subject ? $member->subjects->contains('id', $subject->subject_id) : false,
+            'blocks' => $facultyBlocks[$member->id] ?? [],
+        ])->values();
+
+        $roomList = Room::query()
+            ->where('status', 'Active')
+            ->with('college:id,name,short_name')
+            ->orderBy('room_code')
+            ->get(['id', 'room_code', 'room_name', 'building', 'floor', 'room_type', 'capacity', 'college_id', 'department_id']);
+
+        $utilization = $this->roomUtilizationService->summarizeRooms($roomList);
+
+        $rooms = $roomList->map(fn (Room $room) => [
+            'id' => $room->id,
+            'code' => $room->room_code,
+            'name' => $room->room_name,
+            'building' => $room->building,
+            'floor' => $room->floor,
+            'type' => $room->room_type,
+            'capacity' => $room->capacity,
+            'college_id' => $room->college_id,
+            'department_id' => $room->department_id,
+            'college_name' => $room->college?->short_name ?? $room->college?->name,
+            'class_count' => $roomClasses[$room->id] ?? 0,
+            'scheduled_hours' => $utilization[$room->id]['scheduled_hours'] ?? 0,
+            'max_hours' => $utilization[$room->id]['max_hours'] ?? 0,
+            'blocks' => $roomBlocks[$room->id] ?? [],
+        ])->values();
+
+        return response()->json([
+            'faculty' => $faculty,
+            'rooms' => $rooms,
+        ]);
+    }
+
+    /**
      * Busy Time Ranges — for the row's currently selected Room and/or
      * Faculty, on whichever Days are currently selected on the row
      * (or passed via ?days=), every OTHER SectionSubject's Start/End
@@ -2170,6 +2343,10 @@ class SectionSubjectController extends Controller implements HasMiddleware
                     'section_code' => $assignment->section?->section_code,
                     'section_name' => $assignment->section?->section_name,
                     'section_type' => $assignment->section?->section_type,
+                    // Owning College of this block's Section — the Room Grid
+                    // colors the block by this College's color (Settings ->
+                    // College Colors).
+                    'section_college_id' => $assignment->section?->collegeId(),
                     'is_current_section' => $assignment->section_id === $section->id,
                     // Whether the logged-in user is authorized to move/edit
                     // THIS assignment, regardless of which Section's Room

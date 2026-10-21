@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Exceptions\ScheduleVersionConflictException;
 use App\Models\Faculty;
+use App\Models\FacultyAvailability;
 use App\Models\Room;
 use App\Models\SchoolYear;
 use App\Models\Section;
@@ -113,6 +114,129 @@ class ScheduleConflictService
     private array $termSectionIdsCache = [];
 
     /**
+     * Per-request cache of the (id, academic_year, semester) row
+     * scopedSectionIds() resolves for a given Section id.
+     *
+     * @var array<int, Section|null>
+     */
+    private array $termSectionCache = [];
+
+    /**
+     * Per-request cache of each Faculty member's availability windows,
+     * keyed by faculty id. See facultyAvailabilityWindows().
+     *
+     * @var array<int, array<string, list<array{start:string, end:string}>>>
+     */
+    private array $facultyAvailabilityCache = [];
+
+    /**
+     * A Faculty member's configured availability, as Day => windows
+     * (e.g. ['Mon' => [['start' => '08:00', 'end' => '12:00']]]).
+     * Empty array = no restriction configured (available any time).
+     *
+     * @return array<string, list<array{start:string, end:string}>>
+     */
+    public function facultyAvailabilityWindows(int $facultyId): array
+    {
+        if (! array_key_exists($facultyId, $this->facultyAvailabilityCache)) {
+            $map = [];
+
+            FacultyAvailability::query()
+                ->where('faculty_id', $facultyId)
+                ->orderBy('start_time')
+                ->get(['day', 'start_time', 'end_time'])
+                ->each(function (FacultyAvailability $row) use (&$map) {
+                    $map[$row->day][] = [
+                        'start' => substr((string) $row->start_time, 0, 5),
+                        'end' => substr((string) $row->end_time, 0, 5),
+                    ];
+                });
+
+            $this->facultyAvailabilityCache[$facultyId] = $map;
+        }
+
+        return $this->facultyAvailabilityCache[$facultyId];
+    }
+
+    /**
+     * Drop the cached windows for a Faculty member (call after editing
+     * their availability within the same request).
+     */
+    public function forgetFacultyAvailability(int $facultyId): void
+    {
+        unset($this->facultyAvailabilityCache[$facultyId]);
+    }
+
+    /**
+     * Whether a Day/Time slot sits entirely inside this Faculty
+     * member's availability. A Faculty member with no availability
+     * configured is always available. A configured Faculty member is
+     * unavailable on any Day that has no window, and on any Day where
+     * the slot isn't fully contained in one window.
+     *
+     * Returns null when the slot is fine, otherwise the first offending
+     * Day token (e.g. 'Tue').
+     *
+     * @param  list<string>  $dayTokens
+     */
+    public function findFacultyAvailabilityViolation(int $facultyId, array $dayTokens, string $startTime, string $endTime): ?string
+    {
+        $windows = $this->facultyAvailabilityWindows($facultyId);
+
+        if (empty($windows)) {
+            return null;
+        }
+
+        $start = substr($startTime, 0, 5);
+        $end = substr($endTime, 0, 5);
+
+        foreach ($dayTokens as $day) {
+            $fits = false;
+
+            foreach ($windows[$day] ?? [] as $window) {
+                if ($start >= $window['start'] && $end <= $window['end']) {
+                    $fits = true;
+                    break;
+                }
+            }
+
+            if (! $fits) {
+                return $day;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Human-readable summary of a Faculty member's availability for
+     * error messages, e.g. "Mon, Tue, Wed 8:00 AM-12:00 PM".
+     */
+    public function describeFacultyAvailability(int $facultyId): string
+    {
+        $windows = $this->facultyAvailabilityWindows($facultyId);
+        $order = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+        // Group Days that share the exact same set of windows.
+        $groups = [];
+        foreach ($order as $day) {
+            if (empty($windows[$day])) {
+                continue;
+            }
+
+            $label = collect($windows[$day])
+                ->map(fn ($w) => \Carbon\Carbon::parse($w['start'])->format('g:i A').'-'.\Carbon\Carbon::parse($w['end'])->format('g:i A'))
+                ->implode(', ');
+
+            $groups[$label][] = $day;
+        }
+
+        return collect($groups)
+            ->map(fn (array $days, string $label) => implode(', ', $days).' '.$label)
+            ->implode('; ');
+    }
+
+    /**
      * Run every conflict/availability check for one schedule slot, in
      * strict priority order, and return the errors keyed the way the
      * scheduling workspace's form expects (faculty_id / room_id /
@@ -156,6 +280,21 @@ class ScheduleConflictService
         // Day/Time window.
         if (empty($dayTokens) || ! $startTime || ! $endTime) {
             return [];
+        }
+
+        // 1b. Faculty availability — a Faculty member's own set
+        // teaching hours (e.g. a Part-time instructor who is only free
+        // 8:00 AM-12:00 PM because of another job). A hard requirement
+        // for Auto Generate and manual saves alike.
+        if ($facultyId) {
+            $badDay = $this->findFacultyAvailabilityViolation($facultyId, $dayTokens, $startTime, $endTime);
+            if ($badDay !== null) {
+                $facultyName = $faculty->full_name ?? 'This faculty member';
+
+                return ['faculty_id' => "Faculty Not Available: {$facultyName} is not available on {$badDay} "
+                    .\Carbon\Carbon::parse($startTime)->format('g:i A').'-'.\Carbon\Carbon::parse($endTime)->format('g:i A')
+                    .'. Available: '.$this->describeFacultyAvailability($facultyId).'.', ];
+            }
         }
 
         // 2. Faculty schedule conflict — scoped to this Section's own term.
@@ -306,6 +445,74 @@ class ScheduleConflictService
     }
 
     /**
+     * Boolean versions of findSectionConflict()/findFacultyConflict()/
+     * findRoomConflict() — identical scoping and overlap rules, but a
+     * single EXISTS query instead of hydrating the conflicting row and
+     * eager-loading four relations. Use these whenever the caller only
+     * needs yes/no.
+     */
+    public function hasSectionConflict(
+        int $sectionId,
+        int|array $excludingId,
+        array $dayTokens,
+        string $startTime,
+        string $endTime
+    ): bool {
+        return $this->hasOverlap(
+            SectionSubject::query()->where('section_id', $sectionId),
+            $excludingId,
+            $dayTokens,
+            $startTime,
+            $endTime
+        );
+    }
+
+    public function hasFacultyConflict(
+        int $facultyId,
+        int|array $excludingId,
+        array $dayTokens,
+        string $startTime,
+        string $endTime,
+        ?int $sectionId = null
+    ): bool {
+        // Also "conflicts" when the slot is outside the Faculty
+        // member's set availability, so every candidate-slot loop
+        // (Recommend Day & Time, Auto Generate) skips it automatically.
+        if ($this->findFacultyAvailabilityViolation($facultyId, $dayTokens, $startTime, $endTime) !== null) {
+            return true;
+        }
+
+        return $this->hasOverlap(
+            SectionSubject::query()
+                ->where('faculty_id', $facultyId)
+                ->whereIn('section_id', $this->scopedSectionIds($sectionId)),
+            $excludingId,
+            $dayTokens,
+            $startTime,
+            $endTime
+        );
+    }
+
+    public function hasRoomConflict(
+        int $roomId,
+        int|array $excludingId,
+        array $dayTokens,
+        string $startTime,
+        string $endTime,
+        ?int $sectionId = null
+    ): bool {
+        return $this->hasOverlap(
+            SectionSubject::query()
+                ->where('room_id', $roomId)
+                ->whereIn('section_id', $this->scopedSectionIds($sectionId)),
+            $excludingId,
+            $dayTokens,
+            $startTime,
+            $endTime
+        );
+    }
+
+    /**
      * DAILY-HOURS CAP — separate from Max Teaching Load (a weekly/
      * semester unit total). Sums this Faculty member's ALREADY-
      * scheduled minutes on each requested Day (across every Section
@@ -433,7 +640,14 @@ class ScheduleConflictService
             return $this->activeSemesterSectionIds();
         }
 
-        $section = Section::find($sectionId, ['id', 'academic_year', 'semester']);
+        // PERFORMANCE — memoized: a candidate-slot loop calls this once
+        // per candidate with the SAME $sectionId; a Section's own
+        // academic_year/semester never change mid-request.
+        if (! array_key_exists($sectionId, $this->termSectionCache)) {
+            $this->termSectionCache[$sectionId] = Section::find($sectionId, ['id', 'academic_year', 'semester']);
+        }
+
+        $section = $this->termSectionCache[$sectionId];
 
         if (! $section) {
             return $this->activeSemesterSectionIds();
@@ -547,7 +761,44 @@ class ScheduleConflictService
         string $startTime,
         string $endTime
     ): ?SectionSubject {
-        return $query->with(['subject:id,subject_code', 'section:id,section_code', 'faculty:id,first_name,last_name', 'room:id,room_code'])
+        return $this->overlapQuery($query, $excludingId, $dayTokens, $startTime, $endTime)
+            ->with(['subject:id,subject_code', 'section:id,section_code', 'faculty:id,first_name,last_name', 'room:id,room_code'])
+            ->first();
+    }
+
+    /**
+     * PERFORMANCE (N+1) — boolean twin of findOverlap(). Callers that
+     * only ask "is there ANY conflict?" (the candidate-slot loops in
+     * RecommendationService, the per-faculty/per-room ranking passes)
+     * never read the conflicting row, so there is no reason to
+     * hydrate it and eager-load its subject/section/faculty/room —
+     * that was up to 5 queries per candidate instead of 1 cheap
+     * EXISTS. Same WHERE clause as findOverlap() (shared through
+     * overlapQuery()), so the two can never disagree.
+     */
+    private function hasOverlap(
+        Builder $query,
+        int|array $excludingId,
+        array $dayTokens,
+        string $startTime,
+        string $endTime
+    ): bool {
+        return $this->overlapQuery($query, $excludingId, $dayTokens, $startTime, $endTime)->exists();
+    }
+
+    /**
+     * The shared overlap predicate behind findOverlap()/hasOverlap().
+     *
+     * @return Builder<SectionSubject>
+     */
+    private function overlapQuery(
+        Builder $query,
+        int|array $excludingId,
+        array $dayTokens,
+        string $startTime,
+        string $endTime
+    ): Builder {
+        return $query
             ->whereNotIn('id', (array) $excludingId)
             ->whereNotNull('days')
             ->whereNotNull('start_time')
@@ -566,8 +817,7 @@ class ScheduleConflictService
             // Mirrors overlaps() as a SQL predicate — kept in sync by hand
             // since the query needs it inline, not as a callable.
             ->where('start_time', '<', $endTime)
-            ->where('end_time', '>', $startTime)
-            ->first();
+            ->where('end_time', '>', $startTime);
     }
 
     private function describeWindow(SectionSubject $conflict): string

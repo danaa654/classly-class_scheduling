@@ -99,6 +99,20 @@ return [
             'expire' => 60,
             'throttle' => 60,
         ],
+
+        // FACULTY LOGIN ACCOUNTS — set-password invitations
+        // (App\Services\FacultyAccountService::BROKER). Same users +
+        // token table as the normal broker, but the link lives 72 hours
+        // (4320 min) instead of 60 minutes, so a faculty member who
+        // doesn't open the email right away isn't locked out. Forgot
+        // Password links are unaffected. throttle 0: tokens are issued
+        // by an admin action, not by the visitor.
+        'faculty_invites' => [
+            'provider' => 'users',
+            'table' => env('AUTH_PASSWORD_RESET_TOKEN_TABLE', 'password_reset_tokens'),
+            'expire' => 4320,
+            'throttle' => 0,
+        ],
     ],
 
     /*

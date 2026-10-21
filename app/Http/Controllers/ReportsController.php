@@ -159,7 +159,8 @@ class ReportsController extends Controller
             if ($gridEligible) {
                 $gridData = $this->reports->buildGridData(
                     $report['rows']->all(),
-                    $this->schedulingWindowFor($filters['academic_year'] ?: null),
+                    // only_day: when the Day filter is set, print just that day's column (same as the on-screen Grid).
+                    array_merge($this->schedulingWindowFor($filters['academic_year'] ?: null), ['only_day' => $filters['day'] ?? '']),
                     $reportType,
                 );
             }
@@ -189,7 +190,11 @@ class ReportsController extends Controller
             'signerRole' => match (true) {
                 ! $request->user() => null,
                 $request->user()->hasRole('Administrator') => 'Admin',
-                default => $request->user()->getRoleNames()->first(),
+                // Multi-role users: show the most senior role they hold
+                // on the sign-off line, not whichever is listed first.
+                default => collect(['Registrar', 'Dean', 'OIC', 'Assistant Dean'])
+                    ->first(fn ($r) => $request->user()->hasRole($r))
+                    ?? $request->user()->getRoleNames()->first(),
             },
             'signerName' => $request->user()?->name,
         ]);
@@ -274,6 +279,12 @@ class ReportsController extends Controller
             'section_type' => $request->query('section_type', ''),
             'faculty_id' => $request->query('faculty_id', ''),
             'room_id' => $request->query('room_id', ''),
+            // Day filter (Mon..Sun) — Schedule by Faculty/Room/Section only list
+            // classes meeting on that day, e.g. Tue = who is scheduled on Tuesdays.
+            // Anything that isn't a real day token is ignored.
+            'day' => in_array($request->query('day', ''), \App\Models\SchoolYear::ALL_DAYS, true)
+                ? (string) $request->query('day')
+                : '',
         ];
 
         $cleanFilters = array_filter($filters, fn ($v) => $v !== '' && $v !== null);

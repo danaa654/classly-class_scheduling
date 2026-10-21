@@ -85,6 +85,19 @@ class FacultyPolicy
     }
 
     /**
+     * Whether the user may create / re-invite a LOGIN account for this
+     * Faculty member (FacultyAccountController). Administrator and
+     * Registrar: any faculty. Dean/OIC: their own College's faculty.
+     * Assistant Dean (or a Dean/OIC flagged for GenEd/Minor): GenEd/Minor
+     * faculty — the same lane as editing the record (canAccess()), so
+     * nobody can hand out a login for someone they couldn't edit.
+     */
+    public function provisionAccount(User $user, Faculty $faculty): bool
+    {
+        return $this->canAccess($user, $faculty);
+    }
+
+    /**
      * Whether the user may submit a Faculty CREATION request for the
      * given (proposed) College. Only Dean/OIC/Assistant Dean use this
      * path — Admin/Registrar use create()/createForCollege() directly

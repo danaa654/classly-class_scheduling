@@ -4,6 +4,7 @@ import { ref, watch, computed } from 'vue';
 import { useToast } from 'primevue/usetoast';
 import Swal from 'sweetalert2';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import PageHeader from '@/Components/PageHeader.vue';
 import Card from 'primevue/card';
 import Toolbar from 'primevue/toolbar';
 import InputText from 'primevue/inputtext';
@@ -52,6 +53,33 @@ const props = defineProps({
     // filter option is offered at all; Admin/Registrar/Assistant Dean
     // already see the full roster by default so it'd be redundant.
     isCollegeScopedViewer: { type: Boolean, default: false },
+
+    // Faculty LOGIN accounts — see FacultyController::index() and
+    // FacultyAccountController. canProvisionAccounts gates the Generate
+    // Accounts button; accountSummary feeds its "N pending" badge.
+    canProvisionAccounts: { type: Boolean, default: false },
+    accountSummary: { type: Object, default: () => ({ pending: 0, missingEmail: 0 }) },
+});
+
+/* Table presentation helpers — college color on the row edge / ID badge,
+   same as Curriculum and Subjects. General Education has no college. */
+const hexOrNull = (hex) => (/^#[0-9a-f]{6}$/i.test(hex ?? '') ? hex : null);
+const facultyColor = (row) => hexOrNull(row.college?.color);
+const idBadgeStyle = (row) => {
+    const color = facultyColor(row) ?? '#64748B';
+    const r = parseInt(color.slice(1, 3), 16);
+    const g = parseInt(color.slice(3, 5), 16);
+    const b = parseInt(color.slice(5, 7), 16);
+    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+
+    return { backgroundColor: color, color: luminance > 0.62 ? '#1E293B' : '#FFFFFF' };
+};
+// Minimalist college pill: soft tint of the college color + small dot.
+const collegePillStyle = (row) => ({
+    backgroundColor: `${facultyColor(row) ?? '#94A3B8'}${isDark.value ? '33' : '22'}`,
+});
+const rowStyle = (row) => ({
+    boxShadow: `inset 4px 0 0 0 ${facultyColor(row) ?? '#CBD5E1'}`,
 });
 
 const toast = useToast();
@@ -74,6 +102,138 @@ watch(
         }
     },
 );
+
+/* ------------------------------------------------------------------ */
+/* Faculty LOGIN accounts                                              */
+/*                                                                      */
+/* Create a login for each faculty member so they can see their own    */
+/* schedule. No password is ever shown or typed here: the faculty      */
+/* member gets a set-your-own-password link by email (or, as a         */
+/* fallback, a one-time link to hand over). Backed by                  */
+/* FacultyAccountController; every row is scope-checked server-side.   */
+/* ------------------------------------------------------------------ */
+
+const accountSeverity = {
+    none: 'secondary',
+    queued: 'info',
+    invited: 'info',
+    failed: 'danger',
+    active: 'success',
+    inactive: 'secondary',
+};
+
+const generatingAccounts = ref(false);
+const accountBusyId = ref(null);
+
+const dialogPt = computed(() => ({
+    root: { class: isDark.value ? '!bg-[#141D33] !border !border-white/10 !text-white !rounded-2xl !shadow-2xl dark-scope' : '!border !border-[rgba(30,41,59,0.06)] !rounded-2xl !shadow-2xl' },
+    header: { class: isDark.value ? '!bg-[#141D33] !border-b !border-white/10 !rounded-t-2xl' : '!rounded-t-2xl' },
+    content: { class: isDark.value ? '!bg-[#141D33]' : '' },
+    footer: { class: isDark.value ? '!bg-[#141D33] !border-t !border-white/10 !rounded-b-2xl' : '!rounded-b-2xl' },
+}));
+
+const onGenerateAccounts = () => {
+    const pending = props.accountSummary?.pending ?? 0;
+    const missing = props.accountSummary?.missingEmail ?? 0;
+
+    if (pending === 0) {
+        Swal.fire({
+            title: 'Nothing to generate',
+            text: missing > 0
+                ? `${missing} faculty member(s) in your scope have no email on file. Add their email first, then try again.`
+                : 'Every faculty member in your scope already has an account.',
+            icon: 'info',
+        });
+        return;
+    }
+
+    Swal.fire({
+        title: `Create ${pending} faculty account${pending === 1 ? '' : 's'}?`,
+        text: `Each faculty member gets an email with a link to set their own password.`
+            + (missing > 0 ? ` ${missing} more without an email on file will be skipped.` : ''),
+        icon: 'question',
+        showCancelButton: true,
+        confirmButtonColor: '#059669',
+        confirmButtonText: 'Create accounts',
+    }).then((result) => {
+        if (!result.isConfirmed) return;
+
+        generatingAccounts.value = true;
+        router.post(route('scheduling.faculty.accounts.generate'), {}, {
+            preserveScroll: true,
+            onFinish: () => { generatingAccounts.value = false; },
+        });
+    });
+};
+
+const postAccountAction = (routeName, faculty) => {
+    accountBusyId.value = faculty.id;
+    router.post(route(routeName, faculty.id), {}, {
+        preserveScroll: true,
+        onFinish: () => { accountBusyId.value = null; },
+    });
+};
+
+const onCreateAccount = (faculty) => {
+    if (!faculty.email) {
+        toast.add({ severity: 'warn', summary: 'No email', detail: 'Add an email for this faculty member first (Edit).', life: 4000 });
+        return;
+    }
+
+    Swal.fire({
+        title: 'Create account?',
+        text: `${faculty.first_name} ${faculty.last_name} will get an email at ${faculty.email} with a link to set their own password.`,
+        icon: 'question',
+        showCancelButton: true,
+        confirmButtonColor: '#059669',
+        confirmButtonText: 'Create & email',
+    }).then((result) => {
+        if (result.isConfirmed) postAccountAction('scheduling.faculty.account.store', faculty);
+    });
+};
+
+const onResendInvite = (faculty) => postAccountAction('scheduling.faculty.account.resend', faculty);
+const onGetInviteLink = (faculty) => postAccountAction('scheduling.faculty.account.invite-link', faculty);
+
+// Rows "Generate Accounts" had to skip (no email, email already used, ...).
+const skipsVisible = ref(false);
+const accountSkips = computed(() => page.props.flash?.accountSkips ?? []);
+watch(
+    () => page.props.flash?.accountSkips,
+    (skips) => { if (skips?.length) skipsVisible.value = true; },
+);
+
+// One-time invite link (the "no email" fallback).
+const linkVisible = ref(false);
+const inviteLink = computed(() => page.props.flash?.inviteLink ?? null);
+const linkCopied = ref(false);
+watch(
+    () => page.props.flash?.inviteLink,
+    (link) => {
+        if (link) {
+            linkCopied.value = false;
+            linkVisible.value = true;
+        }
+    },
+);
+
+const copyInviteLink = async () => {
+    const url = inviteLink.value?.url;
+    if (!url) return;
+
+    try {
+        await navigator.clipboard.writeText(url);
+    } catch (e) {
+        // Clipboard API needs https/localhost; fall back for plain-http LAN use.
+        const el = document.createElement('textarea');
+        el.value = url;
+        document.body.appendChild(el);
+        el.select();
+        document.execCommand('copy');
+        document.body.removeChild(el);
+    }
+    linkCopied.value = true;
+};
 
 /* ------------------------------------------------------------------ */
 /* Bulk Import — Faculty Master                                        */
@@ -490,20 +650,10 @@ const fullName = (faculty) => {
             <span class="text-lg font-semibold" :class="isDark ? 'text-white' : 'text-[#1E293B]'">Faculty Master</span>
         </template>
 
-        <div class="max-w-7xl mx-auto w-full" :class="isDark ? 'dark-scope' : ''">
+        <div class="w-full" :class="isDark ? 'dark-scope' : ''">
             <!-- Page Title -->
-            <div class="neu-card neu-spotlight relative mb-8 overflow-hidden rounded-2xl">
-                <div class="pointer-events-none absolute inset-0 overflow-hidden rounded-2xl">
-                    <div class="absolute inset-0" :class="isDark ? 'bg-gradient-to-br from-blue-500/10 via-transparent to-red-500/10' : 'bg-gradient-to-br from-blue-50 via-transparent to-red-50/60'"></div>
-                    <div class="absolute -right-10 -top-16 h-44 w-44 rounded-full bg-gradient-to-br" :class="isDark ? 'from-blue-500/20 via-blue-500/5 to-transparent' : 'from-blue-200/80 via-blue-100/40 to-transparent'"></div>
-                    <div class="absolute -bottom-20 right-16 h-40 w-40 rounded-full bg-gradient-to-tr" :class="isDark ? 'from-red-500/20 via-red-500/5 to-transparent' : 'from-red-200/70 via-red-100/30 to-transparent'"></div>
-                    <div class="absolute -left-10 bottom-0 h-28 w-28 rounded-full bg-gradient-to-tr border-4" :class="isDark ? 'from-blue-500/10 to-transparent border-blue-400/10' : 'from-blue-100/60 to-transparent border-blue-100'"></div>
-                    <div class="absolute left-[38%] top-0 h-3 w-3 rounded-full bg-gradient-to-br" :class="isDark ? 'from-red-400/50 to-blue-400/30' : 'from-red-400/80 to-blue-300/60'"></div>
-                    <div class="absolute left-[55%] bottom-4 h-20 w-20 rounded-full bg-gradient-to-r blur-xl" :class="isDark ? 'from-blue-500/10 to-red-500/10' : 'from-blue-200/40 to-red-200/40'"></div>
-                </div>
-                <div class="relative rounded-2xl p-6 transition-colors duration-300">
-                <h1 class="text-2xl font-bold tracking-tight flex items-center gap-2" :class="isDark ? 'text-white' : 'text-[#1E293B]'">
-                    Faculty Master
+            <PageHeader title="Faculty Master" subtitle="Manage faculty members available for teaching assignments." icon="pi pi-users" tone="blue" :count="faculties.total" count-label="faculty">
+                <template #info>
                     <InfoPopover
                         title="Faculty Master"
                         :paragraphs="[
@@ -516,12 +666,8 @@ const fullName = (faculty) => {
                             'Use the view icon to manage a faculty member\'s teaching qualifications, availability, and workload details.',
                         ]"
                     />
-                </h1>
-                <p class="mt-1" :class="isDark ? 'text-slate-400' : 'text-slate-500'">
-                    Manage faculty members available for teaching assignments.
-                </p>
-                </div>
-            </div>
+                </template>
+            </PageHeader>
 
             <div class="neu-card rounded-2xl transition-colors duration-300">
             <Card
@@ -576,6 +722,18 @@ const fullName = (faculty) => {
                                     aria-label="Refresh"
                                 />
                                 <Button
+                                    v-if="canProvisionAccounts"
+                                    label="Generate Accounts"
+                                    icon="pi pi-user-plus"
+                                    severity="secondary"
+                                    outlined
+                                    :badge="accountSummary.pending ? String(accountSummary.pending) : null"
+                                    badgeSeverity="success"
+                                    :loading="generatingAccounts"
+                                    v-tooltip.top="'Create a login for every faculty member in your scope who doesn\'t have one, and email each a link to set their own password.'"
+                                    @click="onGenerateAccounts"
+                                />
+                                <Button
                                     v-if="canImportFacultyDirectly"
                                     label="Import"
                                     icon="pi pi-upload"
@@ -605,10 +763,12 @@ const fullName = (faculty) => {
                         :value="faculties.data"
                         :loading="loading"
                         dataKey="id"
-                        class="neu-inset neu-table rounded-xl overflow-hidden"
+                        class="neu-inset neu-table faculty-table w-full rounded-xl overflow-hidden"
                         :class="isDark ? 'neu-table-dark' : ''"
+                        :rowStyle="rowStyle"
+                        tableStyle="min-width: 100%"
                         stripedRows
-                        responsiveLayout="scroll"
+                        scrollable
                         lazy
                         paginator
                         :rows="faculties.per_page"
@@ -632,27 +792,62 @@ const fullName = (faculty) => {
                             </div>
                         </template>
 
-                        <Column field="faculty_id" header="Faculty ID" style="width: 9rem" />
+                        <Column header="Faculty ID" style="width: 8rem">
+                            <template #body="{ data }">
+                                <span
+                                    class="inline-flex items-center justify-center whitespace-nowrap rounded-lg px-2.5 py-1 text-xs font-bold tracking-wide"
+                                    :style="idBadgeStyle(data)"
+                                >{{ data.faculty_id }}</span>
+                            </template>
+                        </Column>
                         <Column header="Faculty Name" style="min-width: 14rem">
                             <template #body="{ data }">
                                 <span
-                                    class="cursor-pointer hover:underline"
+                                    class="cursor-pointer text-[15px] font-semibold leading-snug hover:underline"
                                     :class="isDark ? 'text-emerald-400' : 'text-emerald-700'"
                                     @click="router.visit(route('scheduling.faculty.show', data.id))"
                                 >
                                     {{ fullName(data) }}
                                 </span>
+                                <!-- System roles this person also holds (Registrar / OIC / ...) -->
+                                <div v-if="data.system_roles?.length" class="mt-1 flex flex-wrap gap-1">
+                                    <span
+                                        v-for="role in data.system_roles"
+                                        :key="role"
+                                        class="inline-flex items-center gap-1 rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-semibold text-indigo-700"
+                                    >
+                                        <i class="pi pi-shield text-[9px]"></i>{{ role }}
+                                    </span>
+                                </div>
                             </template>
                         </Column>
-                        <Column header="Employment Status" style="width: 10rem">
+                        <Column header="Employment Status" style="width: 9rem">
                             <template #body="{ data }">
-                                {{ data.employment_type }}
+                                <span
+                                    class="inline-flex whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-semibold"
+                                    :class="data.employment_type === 'Full-time'
+                                        ? (isDark ? 'bg-blue-500/20 text-blue-300' : 'bg-blue-100 text-blue-700')
+                                        : (isDark ? 'bg-violet-500/20 text-violet-300' : 'bg-violet-100 text-violet-700')"
+                                >{{ data.employment_type }}</span>
                             </template>
                         </Column>
-                        <Column header="College" style="width: 16rem">
+                        <Column header="College" style="min-width: 15rem">
                             <template #body="{ data }">
-                                <span v-if="data.college?.name">{{ data.college.name }}</span>
-                                <Tag v-else value="General Education" severity="warning" />
+                                <span
+                                    v-if="data.college?.name"
+                                    class="inline-flex max-w-[15rem] items-center gap-1.5 truncate whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-semibold"
+                                    :class="isDark ? 'text-slate-200' : 'text-slate-700'"
+                                    :style="collegePillStyle(data)"
+                                    :title="data.college.name"
+                                >
+                                    <span class="h-1.5 w-1.5 shrink-0 rounded-full" :style="{ backgroundColor: facultyColor(data) ?? '#94A3B8' }"></span>
+                                    <span class="truncate">{{ data.college.name }}</span>
+                                </span>
+                                <span
+                                    v-else
+                                    class="inline-flex whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-semibold"
+                                    :class="isDark ? 'bg-amber-500/20 text-amber-300' : 'bg-amber-100 text-amber-800'"
+                                >General Education</span>
                                 <Tag
                                     v-if="!data.canEdit"
                                     value="View only"
@@ -662,9 +857,9 @@ const fullName = (faculty) => {
                                 />
                             </template>
                         </Column>
-                        <Column header="Max Teaching Units" style="width: 9rem">
+                        <Column header="Max Units" style="width: 6rem" headerClass="faculty-num" bodyClass="faculty-num">
                             <template #body="{ data }">
-                                {{ data.max_teaching_units }}
+                                <span class="font-semibold" :class="isDark ? 'text-white' : 'text-[#1E293B]'">{{ data.max_teaching_units }}</span>
                             </template>
                         </Column>
                         <Column style="width: 11rem">
@@ -696,7 +891,7 @@ const fullName = (faculty) => {
                                 </div>
                             </template>
                         </Column>
-                        <Column style="width: 9rem">
+                        <Column style="width: 8rem">
                             <template #header>
                                 <span class="flex items-center gap-1">
                                     Status
@@ -711,13 +906,75 @@ const fullName = (faculty) => {
                                 </span>
                             </template>
                             <template #body="{ data }">
-                                <Tag
-                                    :value="data.status"
-                                    :severity="data.status === 'Active' ? 'success' : 'secondary'"
-                                />
+                                <span
+                                    class="inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold"
+                                    :class="data.status === 'Active'
+                                        ? (isDark ? 'bg-emerald-500/20 text-emerald-300' : 'bg-emerald-100 text-emerald-700')
+                                        : (isDark ? 'bg-white/10 text-slate-400' : 'bg-slate-100 text-slate-500')"
+                                >{{ data.status }}</span>
                             </template>
                         </Column>
-                        <Column style="width: 11rem">
+                        <Column style="width: 13rem">
+                            <template #header>
+                                <span class="flex items-center gap-1">
+                                    Login Account
+                                    <InfoPopover
+                                        title="Login Account"
+                                        :bullets="[
+                                            'No account — this faculty member can\'t log in yet.',
+                                            'Invite sent — they were emailed a link to set their own password.',
+                                            'Send failed — the email didn\'t go out; use Resend, or Copy link to hand it over.',
+                                            'Active — they\'ve set a password and can see their own schedule.',
+                                        ]"
+                                        width="w-72"
+                                    />
+                                </span>
+                            </template>
+                            <template #body="{ data }">
+                                <div class="flex items-center gap-1">
+                                    <Tag :value="data.account?.label" :severity="accountSeverity[data.account?.status] ?? 'secondary'" class="!whitespace-nowrap" />
+                                    <template v-if="data.canProvisionAccount">
+                                        <Button
+                                            v-if="data.account?.status === 'none'"
+                                            v-tooltip.top="'Create login account & email invite'"
+                                            icon="pi pi-user-plus"
+                                            text
+                                            rounded
+                                            severity="success"
+                                            size="small"
+                                            aria-label="Create account"
+                                            :loading="accountBusyId === data.id"
+                                            @click="onCreateAccount(data)"
+                                        />
+                                        <template v-else-if="['queued', 'invited', 'failed'].includes(data.account?.status)">
+                                            <Button
+                                                v-tooltip.top="'Resend invitation email'"
+                                                icon="pi pi-send"
+                                                text
+                                                rounded
+                                                severity="secondary"
+                                                size="small"
+                                                aria-label="Resend invite"
+                                                :loading="accountBusyId === data.id"
+                                                @click="onResendInvite(data)"
+                                            />
+                                            <Button
+                                                v-tooltip.top="'Get a one-time link to hand over (replaces any emailed link)'"
+                                                icon="pi pi-link"
+                                                text
+                                                rounded
+                                                severity="secondary"
+                                                size="small"
+                                                aria-label="Copy invite link"
+                                                :disabled="accountBusyId === data.id"
+                                                @click="onGetInviteLink(data)"
+                                            />
+                                        </template>
+                                    </template>
+                                </div>
+                            </template>
+                        </Column>
+                        <Column style="width: 9rem">
                             <template #header>
                                 <span class="flex items-center gap-1">
                                     Actions
@@ -1175,10 +1432,66 @@ const fullName = (faculty) => {
                 />
             </template>
         </Dialog>
+
+        <!-- Faculty LOGIN accounts — rows "Generate Accounts" skipped -->
+        <Dialog
+            v-model:visible="skipsVisible"
+            modal
+            header="Some faculty were skipped"
+            :style="{ width: '560px' }"
+            :breakpoints="{ '640px': '95vw' }"
+            :draggable="false"
+            :pt="dialogPt"
+        >
+            <p class="mb-3 text-sm" :class="isDark ? 'text-slate-300' : 'text-slate-600'">
+                No account was created for these faculty members. Fix the reason, then run Generate Accounts again.
+            </p>
+            <DataTable :value="accountSkips" size="small" scrollable scrollHeight="320px" class="text-sm">
+                <Column field="faculty_id" header="Faculty ID" style="width: 7rem" />
+                <Column field="name" header="Name" />
+                <Column field="reason" header="Why" />
+            </DataTable>
+            <template #footer>
+                <Button label="Close" severity="secondary" outlined @click="skipsVisible = false" />
+            </template>
+        </Dialog>
+
+        <!-- Faculty LOGIN accounts — one-time invite link (no-email fallback) -->
+        <Dialog
+            v-model:visible="linkVisible"
+            modal
+            header="One-time invite link"
+            :style="{ width: '560px' }"
+            :breakpoints="{ '640px': '95vw' }"
+            :draggable="false"
+            :pt="dialogPt"
+        >
+            <p class="mb-3 text-sm" :class="isDark ? 'text-slate-300' : 'text-slate-600'">
+                Give this link to <strong>{{ inviteLink?.faculty }}</strong> yourself (chat or in person). They open it and choose
+                their own password. It works once, expires in 72 hours, and replaces any earlier invitation link.
+            </p>
+            <InputText :modelValue="inviteLink?.url ?? ''" readonly class="w-full !text-xs" @focus="$event.target.select()" />
+            <template #footer>
+                <Button label="Close" severity="secondary" outlined @click="linkVisible = false" />
+                <Button :label="linkCopied ? 'Copied!' : 'Copy link'" :icon="linkCopied ? 'pi pi-check' : 'pi pi-copy'" severity="success" @click="copyInviteLink" />
+            </template>
+        </Dialog>
     </AppLayout>
 </template>
 
 <style scoped>
+.faculty-table :deep(.p-datatable-tbody > tr > td) {
+    padding-top: 0.85rem;
+    padding-bottom: 0.85rem;
+}
+.faculty-table :deep(th.faculty-num),
+.faculty-table :deep(td.faculty-num) {
+    text-align: center;
+}
+.faculty-table :deep(th.faculty-num .p-datatable-column-header-content) {
+    justify-content: center;
+}
+
 /* Dark-mode overrides. Wrapping an element in the "dark-scope" class
    (added conditionally via isDark) recolors the shared light-mode
    Tailwind utility classes and PrimeVue component chrome used

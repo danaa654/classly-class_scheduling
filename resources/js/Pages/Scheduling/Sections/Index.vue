@@ -4,6 +4,7 @@ import { ref, computed, watch } from 'vue';
 import { useToast } from 'primevue/usetoast';
 import Swal from 'sweetalert2';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import PageHeader from '@/Components/PageHeader.vue';
 import Card from 'primevue/card';
 import InputText from 'primevue/inputtext';
 import InputNumber from 'primevue/inputnumber';
@@ -62,6 +63,38 @@ const props = defineProps({
     termOptions: { type: Array, default: () => [] },
     sectionTypes: { type: Array, default: () => ['Regular', 'Irregular'] },
 });
+
+/* Presentation helpers — college color (major -> department -> college)
+   on the row edge + section badge, same look as Curriculum. */
+const sectionColor = (row) => {
+    const c = row.major?.department?.college?.color;
+    return /^#[0-9a-f]{6}$/i.test(c ?? '') ? c : null;
+};
+const codeBadgeStyle = (row) => {
+    const color = sectionColor(row) ?? '#64748B';
+    const r = parseInt(color.slice(1, 3), 16);
+    const g = parseInt(color.slice(3, 5), 16);
+    const b = parseInt(color.slice(5, 7), 16);
+    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+
+    return { backgroundColor: color, color: luminance > 0.62 ? '#1E293B' : '#FFFFFF' };
+};
+const rowStyle = (row) => ({
+    boxShadow: `inset 4px 0 0 0 ${sectionColor(row) ?? '#CBD5E1'}`,
+});
+const schedulingPill = (row) => {
+    const d = isDark.value;
+    const gray = d ? 'bg-white/10 text-slate-400' : 'bg-slate-100 text-slate-500';
+    const total = row.total_subjects_count;
+    const done = row.assigned_subjects_count;
+
+    if (total === 0) return { label: 'No Subjects Yet', class: gray };
+    if (done === 0) return { label: 'Not Scheduled', class: gray };
+    if (done < total) {
+        return { label: `Partially Scheduled (${done}/${total})`, class: d ? 'bg-amber-500/20 text-amber-300' : 'bg-amber-100 text-amber-800' };
+    }
+    return { label: `Fully Scheduled (${done}/${total})`, class: d ? 'bg-emerald-500/20 text-emerald-300' : 'bg-emerald-100 text-emerald-700' };
+};
 
 const toast = useToast();
 const page = usePage();
@@ -1317,20 +1350,10 @@ const onUnlockSection = (section) => {
             <span class="text-lg font-semibold" :class="isDark ? 'text-white' : 'text-[#1E293B]'">Sections</span>
         </template>
 
-        <div class="max-w-7xl mx-auto w-full" :class="isDark ? 'dark-scope' : ''">
+        <div class="w-full" :class="isDark ? 'dark-scope' : ''">
             <!-- Page Title -->
-            <div class="neu-card neu-spotlight relative mb-8 overflow-hidden rounded-2xl">
-                <div class="pointer-events-none absolute inset-0 overflow-hidden rounded-2xl">
-                    <div class="absolute inset-0" :class="isDark ? 'bg-gradient-to-br from-blue-500/10 via-transparent to-red-500/10' : 'bg-gradient-to-br from-blue-50 via-transparent to-red-50/60'"></div>
-                    <div class="absolute -right-10 -top-16 h-44 w-44 rounded-full bg-gradient-to-br" :class="isDark ? 'from-blue-500/20 via-blue-500/5 to-transparent' : 'from-blue-200/80 via-blue-100/40 to-transparent'"></div>
-                    <div class="absolute -bottom-20 right-16 h-40 w-40 rounded-full bg-gradient-to-tr" :class="isDark ? 'from-red-500/20 via-red-500/5 to-transparent' : 'from-red-200/70 via-red-100/30 to-transparent'"></div>
-                    <div class="absolute -left-10 bottom-0 h-28 w-28 rounded-full bg-gradient-to-tr border-4" :class="isDark ? 'from-blue-500/10 to-transparent border-blue-400/10' : 'from-blue-100/60 to-transparent border-blue-100'"></div>
-                    <div class="absolute left-[38%] top-0 h-3 w-3 rounded-full bg-gradient-to-br" :class="isDark ? 'from-red-400/50 to-blue-400/30' : 'from-red-400/80 to-blue-300/60'"></div>
-                    <div class="absolute left-[55%] bottom-4 h-20 w-20 rounded-full bg-gradient-to-r blur-xl" :class="isDark ? 'from-blue-500/10 to-red-500/10' : 'from-blue-200/40 to-red-200/40'"></div>
-                </div>
-                <div class="relative rounded-2xl p-6 transition-colors duration-300">
-                <h1 class="text-2xl font-bold tracking-tight flex items-center gap-2 text-[#1E293B]">
-                    Sections
+            <PageHeader title="Sections" subtitle="Manage academic sections used for class scheduling." icon="pi pi-th-large" tone="violet" :count="sections.total" count-label="sections">
+                <template #info>
                     <InfoPopover
                         title="Sections"
                         :paragraphs="[
@@ -1343,12 +1366,8 @@ const onUnlockSection = (section) => {
                             'Click a row to open that section\'s subjects and manage its schedule.',
                         ]"
                     />
-                </h1>
-                <p class="mt-1 text-slate-500">
-                    Manage academic sections used for class scheduling.
-                </p>
-                </div>
-            </div>
+                </template>
+            </PageHeader>
 
             <div class="neu-card rounded-2xl transition-colors duration-300">
             <Card
@@ -1477,10 +1496,12 @@ const onUnlockSection = (section) => {
                         :value="sections.data"
                         :loading="loading"
                         dataKey="id"
-                        class="neu-inset neu-table rounded-xl overflow-hidden"
+                        class="neu-inset neu-table sections-table w-full rounded-xl overflow-hidden"
                         :class="isDark ? 'neu-table-dark' : ''"
+                        :rowStyle="rowStyle"
+                        tableStyle="min-width: 100%"
                         stripedRows
-                        responsiveLayout="scroll"
+                        scrollable
                         lazy
                         paginator
                         :rows="sections.per_page"
@@ -1522,38 +1543,54 @@ const onUnlockSection = (section) => {
                             </div>
                         </template>
 
-                        <Column field="section_name" header="Section Name" style="width: 10rem" />
-                        <Column header="Type" style="width: 7rem">
+                        <Column header="Section Name" style="width: 10rem">
                             <template #body="{ data }">
-                                <Tag
-                                    :value="data.section_type || 'Regular'"
-                                    :severity="data.section_type === 'Irregular' ? 'warn' : 'info'"
-                                />
+                                <span
+                                    class="inline-flex items-center justify-center whitespace-nowrap rounded-lg px-2.5 py-1 text-xs font-bold tracking-wide"
+                                    :style="codeBadgeStyle(data)"
+                                >{{ data.section_name }}</span>
                             </template>
                         </Column>
-                        <Column header="Program" style="width: 10rem">
+                        <Column header="Type" style="width: 8rem">
                             <template #body="{ data }">
-                                {{ data.major?.name || '—' }}
+                                <span
+                                    class="inline-flex whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-semibold"
+                                    :class="data.section_type === 'Irregular'
+                                        ? (isDark ? 'bg-amber-500/20 text-amber-300' : 'bg-amber-100 text-amber-800')
+                                        : (isDark ? 'bg-blue-500/20 text-blue-300' : 'bg-blue-100 text-blue-700')"
+                                >{{ data.section_type || 'Regular' }}</span>
                             </template>
                         </Column>
-                        <Column header="Prospectus" style="width: 12rem">
+                        <Column header="Program" style="min-width: 16rem">
                             <template #body="{ data }">
-                                {{ data.curriculum?.code || '—' }}
+                                <p class="line-clamp-2 text-[15px] font-semibold leading-snug" :class="isDark ? 'text-white' : 'text-[#1E293B]'" :title="data.major?.name">
+                                    {{ data.major?.name || '—' }}
+                                </p>
                             </template>
                         </Column>
-                        <Column header="Year Level" style="width: 9rem">
+                        <Column header="Prospectus" style="width: 13rem">
                             <template #body="{ data }">
-                                {{ data.year_level }}
+                                <span
+                                    v-if="data.curriculum?.code"
+                                    class="rounded-md px-1.5 py-0.5 font-mono text-xs font-semibold"
+                                    :class="isDark ? 'bg-white/10 text-slate-300' : 'bg-slate-100 text-slate-600'"
+                                >{{ data.curriculum.code }}</span>
+                                <span v-else :class="isDark ? 'text-slate-500' : 'text-slate-400'">—</span>
+                            </template>
+                        </Column>
+                        <Column header="Year Level" style="width: 8rem">
+                            <template #body="{ data }">
+                                <span class="whitespace-nowrap" :class="isDark ? 'text-slate-300' : 'text-slate-600'">{{ data.year_level }}</span>
                             </template>
                         </Column>
                         <Column header="Academic Year" style="width: 9rem">
                             <template #body="{ data }">
-                                {{ data.academic_year }}
+                                <span class="whitespace-nowrap" :class="isDark ? 'text-slate-300' : 'text-slate-600'">{{ data.academic_year }}</span>
                             </template>
                         </Column>
-                        <Column header="Est. Students" style="width: 8rem">
+                        <Column header="Students" style="width: 7rem" headerClass="sections-num" bodyClass="sections-num">
                             <template #body="{ data }">
-                                {{ data.estimated_students }}
+                                <span class="font-semibold" :class="isDark ? 'text-white' : 'text-[#1E293B]'">{{ data.estimated_students }}</span>
                             </template>
                         </Column>
                         <Column style="width: 9rem">
@@ -1573,10 +1610,12 @@ const onUnlockSection = (section) => {
                             </template>
                             <template #body="{ data }">
                                 <div class="flex items-center gap-1.5">
-                                    <Tag
-                                        :value="data.status"
-                                        :severity="data.status === 'Active' ? 'success' : 'secondary'"
-                                    />
+                                    <span
+                                        class="inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold"
+                                        :class="data.status === 'Active'
+                                            ? (isDark ? 'bg-emerald-500/20 text-emerald-300' : 'bg-emerald-100 text-emerald-700')
+                                            : (isDark ? 'bg-white/10 text-slate-400' : 'bg-slate-100 text-slate-500')"
+                                    >{{ data.status }}</span>
                                     <i
                                         v-if="data.is_finalized"
                                         class="pi pi-lock text-amber-500"
@@ -1585,7 +1624,7 @@ const onUnlockSection = (section) => {
                                 </div>
                             </template>
                         </Column>
-                        <Column style="width: 11rem">
+                        <Column style="width: 15rem">
                             <template #header>
                                 <span class="flex items-center gap-1">
                                     Scheduling
@@ -1602,29 +1641,13 @@ const onUnlockSection = (section) => {
                                 </span>
                             </template>
                             <template #body="{ data }">
-                                <Tag
-                                    v-if="data.total_subjects_count === 0"
-                                    value="No Subjects Yet"
-                                    severity="secondary"
-                                />
-                                <Tag
-                                    v-else-if="data.assigned_subjects_count === 0"
-                                    value="Not Scheduled"
-                                    severity="secondary"
-                                />
-                                <Tag
-                                    v-else-if="data.assigned_subjects_count < data.total_subjects_count"
-                                    :value="`Partially Scheduled (${data.assigned_subjects_count}/${data.total_subjects_count})`"
-                                    severity="warn"
-                                />
-                                <Tag
-                                    v-else
-                                    :value="`Fully Scheduled (${data.assigned_subjects_count}/${data.total_subjects_count})`"
-                                    severity="success"
-                                />
+                                <span
+                                    class="inline-flex whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-semibold"
+                                    :class="schedulingPill(data).class"
+                                >{{ schedulingPill(data).label }}</span>
                             </template>
                         </Column>
-                        <Column header="Actions" style="width: 15rem">
+                        <Column header="Actions" style="width: 12rem">
                             <template #body="{ data }">
                                 <div class="flex gap-1">
                                     <Button
@@ -2448,6 +2471,18 @@ const onUnlockSection = (section) => {
     </AppLayout>
 </template>
 <style scoped>
+.sections-table :deep(.p-datatable-tbody > tr > td) {
+    padding-top: 0.85rem;
+    padding-bottom: 0.85rem;
+}
+.sections-table :deep(th.sections-num),
+.sections-table :deep(td.sections-num) {
+    text-align: center;
+}
+.sections-table :deep(th.sections-num .p-datatable-column-header-content) {
+    justify-content: center;
+}
+
 /* Dark-mode overrides. Wrapping an element in the "dark-scope" class
    (added conditionally via isDark) recolors the shared light-mode
    Tailwind utility classes and PrimeVue component chrome used

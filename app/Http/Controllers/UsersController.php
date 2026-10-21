@@ -4,17 +4,22 @@ namespace App\Http\Controllers;
 
 use App\Models\College;
 use App\Models\Department;
+use App\Models\Faculty;
 use App\Models\User;
 use App\Services\ActivityLogService;
 use App\Services\ImageOptimizationService;
 use App\Services\NotificationService;
 use App\Services\PasswordPolicyService;
+use App\Services\FacultyAccountService;
 use Database\Seeders\RoleSeeder;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 use Inertia\Inertia;
 use Inertia\Response;
 
@@ -67,7 +72,14 @@ class UsersController extends Controller
         // transform() actually reads, instead of every column
         // (profile photo binary paths, timestamps, etc. this table
         // never displays) for every one of potentially hundreds of users.
-        $users = User::with(['roles', 'college:id,name', 'department:id,name', 'departments:id,name'])
+        $users = User::with(['roles', 'faculty:id,user_id', 'college:id,name', 'department:id,name', 'departments:id,name'])
+            // Show every login that holds a SYSTEM role (Administrator,
+            // Registrar, Assistant Dean, Dean, OIC) — including faculty
+            // members an Administrator promoted from the Faculty page
+            // (they carry Faculty + Dean, etc.). Plain Faculty-only
+            // logins (no system role) are still managed from the Faculty
+            // page and stay out of this list.
+            ->whereHas('roles', fn ($q) => $q->whereIn('name', RoleSeeder::ROLES))
             ->orderByDesc('id')
             ->get([
                 'id', 'first_name', 'middle_name', 'last_name', 'suffix', 'name', 'email',
@@ -96,31 +108,53 @@ class UsersController extends Controller
 
         $validated = $request->validate($this->rules($request));
 
-        $user = User::create([
-            'name' => trim("{$validated['first_name']} {$validated['last_name']}"),
-            'first_name' => $validated['first_name'],
-            'middle_name' => $validated['middle_name'] ?? null,
-            'last_name' => $validated['last_name'],
-            'suffix' => $validated['suffix'] ?? null,
-            'email' => $validated['email'],
-            'password' => Hash::make($validated['password']),
-            'password_changed_at' => now(),
-            'status' => $validated['status'],
-            'college_id' => $validated['college_id'] ?? null,
-            'is_gened_assistant_dean' => $this->resolveGenedFlag($validated),
-            'email_verified_at' => now(),
-        ]);
+        // One person = one login. If this person is already on the
+        // Faculty roster (same email → linked; same name but a different
+        // email → rejected with guidance), never create a second login
+        // for them — see resolveFacultyToLink().
+        $faculty = $this->resolveFacultyToLink($validated);
 
-        $user->assignRole($validated['role']);
+        $user = DB::transaction(function () use ($validated, $faculty) {
+            $user = User::create([
+                'name' => trim("{$validated['first_name']} {$validated['last_name']}"),
+                'first_name' => $validated['first_name'],
+                'middle_name' => $validated['middle_name'] ?? null,
+                'last_name' => $validated['last_name'],
+                'suffix' => $validated['suffix'] ?? null,
+                'email' => $validated['email'],
+                'password' => Hash::make($validated['password']),
+                'password_changed_at' => now(),
+                'status' => $validated['status'],
+                'college_id' => $validated['college_id'] ?? null,
+                'is_gened_assistant_dean' => $this->resolveGenedFlag($validated),
+                'email_verified_at' => now(),
+            ]);
 
-        // Attach the OIC's specific department assignments. Leaving this
-        // empty (when "oversees all departments" is checked) means the
-        // OIC covers every department in their college by implication.
-        if (! empty($validated['department_ids'])) {
-            $user->departments()->sync($validated['department_ids']);
-        }
+            $user->assignRole($validated['role']);
 
-        return redirect()->route('users')->with('success', 'User account created successfully.');
+            // Same shape as a login promoted from the Faculty page:
+            // Faculty role + the system role, linked to the roster row.
+            if ($faculty) {
+                $user->assignRole(FacultyAccountService::ROLE);
+                $faculty->forceFill(['user_id' => $user->id])->saveQuietly();
+            }
+
+            // Attach the OIC's specific department assignments. Leaving this
+            // empty (when "oversees all departments" is checked) means the
+            // OIC covers every department in their college by implication.
+            if (! empty($validated['department_ids'])) {
+                $user->departments()->sync($validated['department_ids']);
+            }
+
+            return $user;
+        });
+
+        return redirect()->route('users')->with(
+            'success',
+            $faculty
+                ? "User account created and linked to the existing faculty record of {$faculty->full_name}."
+                : 'User account created successfully.'
+        );
     }
 
     /**
@@ -157,8 +191,23 @@ class UsersController extends Controller
 
         $user->save();
 
-        if ($user->roles->first()?->name !== $validated['role']) {
-            $user->syncRoles([$validated['role']]);
+        // Change only the SYSTEM role. A faculty-linked Dean/OIC/etc. also
+        // holds the Faculty role — never strip it (that would unlink them
+        // from My Schedule).
+        $currentSystemRole = $user->roles
+            ->first(fn ($role) => in_array($role->name, RoleSeeder::ROLES, true))?->name;
+
+        if ($currentSystemRole !== $validated['role']) {
+            $user->syncRoles(
+                $user->hasRole(FacultyAccountService::ROLE)
+                    ? [$validated['role'], FacultyAccountService::ROLE]
+                    : [$validated['role']]
+            );
+        }
+
+        // Keep the roster row's email in step with the login's.
+        if ($user->wasChanged('email')) {
+            Faculty::query()->where('user_id', $user->id)->update(['email' => $user->email]);
         }
 
         $user->departments()->sync($validated['department_ids'] ?? []);
@@ -336,6 +385,55 @@ class UsersController extends Controller
     }
 
     /**
+     * Find the unlinked Faculty roster row this new account belongs to.
+     *
+     * - Same email as an unlinked faculty row → that row (it gets linked).
+     * - No email match, but an unlinked faculty row has the same first +
+     *   last name → reject: creating a separate login would duplicate the
+     *   person. The admin is told to assign the role from the Faculty page
+     *   or reuse the faculty email.
+     * - Otherwise null: this person is not faculty, create a plain account.
+     *
+     * Administrator accounts are never linked to a roster row.
+     *
+     * @param  array<string, mixed>  $validated
+     */
+    private function resolveFacultyToLink(array $validated): ?Faculty
+    {
+        if ($validated['role'] === 'Administrator') {
+            return null;
+        }
+
+        $email = Str::lower(trim($validated['email']));
+
+        $byEmail = Faculty::query()
+            ->whereNull('user_id')
+            ->whereRaw('LOWER(email) = ?', [$email])
+            ->first();
+
+        if ($byEmail) {
+            return $byEmail;
+        }
+
+        $byName = Faculty::query()
+            ->whereNull('user_id')
+            ->whereRaw('LOWER(first_name) = ?', [Str::lower(trim($validated['first_name']))])
+            ->whereRaw('LOWER(last_name) = ?', [Str::lower(trim($validated['last_name']))])
+            ->first();
+
+        if ($byName) {
+            $onFile = filled($byName->email) ? " (email on file: {$byName->email})" : ' (no email on file)';
+
+            throw ValidationException::withMessages([
+                'email' => "{$byName->full_name} is already on the Faculty roster{$onFile}. "
+                    .'Assign the role from the Faculty page instead, or use that email here so the account links to the faculty record.',
+            ]);
+        }
+
+        return null;
+    }
+
+    /**
      * Guard used by index()/store()/update() — User Management (viewing,
      * creating, and editing accounts) is restricted to the Administrator
      * role. Registrar, Dean, OIC and Assistant Dean are blocked here even
@@ -428,7 +526,10 @@ class UsersController extends Controller
      */
     private function transform(User $user): array
     {
-        $role = $user->roles->first()?->name;
+        // The SYSTEM role (a faculty-linked Dean also holds "Faculty",
+        // which must not be what the Role column / edit form shows).
+        $role = $user->roles
+            ->first(fn ($r) => in_array($r->name, RoleSeeder::ROLES, true))?->name;
         $collegeDepartmentCount = $user->college
             ? Department::where('college_id', $user->college_id)->count()
             : 0;
@@ -453,7 +554,9 @@ class UsersController extends Controller
             'lastName' => $user->last_name,
             'suffix' => $user->suffix,
             'email' => $user->email,
+            'photoUrl' => $user->profile_photo_url,
             'role' => $role,
+            'isFaculty' => $user->relationLoaded('faculty') ? $user->faculty !== null : $user->faculty()->exists(),
             'mustChangePassword' => $user->must_change_password,
             'isGenedAssistantDean' => (bool) $user->is_gened_assistant_dean,
             'collegeId' => $user->college_id,

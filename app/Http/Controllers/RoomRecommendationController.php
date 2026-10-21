@@ -242,17 +242,17 @@ class RoomRecommendationController extends Controller
     private function authorizeRoom(Room $room): void
     {
         $user = Auth::user();
-        $role = $user?->getRoleNames()->first();
 
         if (! $user) {
             abort(403);
         }
 
-        if (in_array($role, self::UNSCOPED_ROLES, true)) {
+        // Multi-role safe: check every role the user holds, not just the first.
+        if ($user->hasAnyRole(self::UNSCOPED_ROLES)) {
             return;
         }
 
-        if (in_array($role, ['Dean', 'OIC'], true)
+        if ($user->hasAnyRole(['Dean', 'OIC'])
             && ($room->college_id === null || $room->college_id === $user->college_id)) {
             return;
         }

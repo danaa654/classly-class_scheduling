@@ -12,6 +12,7 @@ import Textarea from 'primevue/textarea';
 import Select from 'primevue/select';
 import MultiSelect from 'primevue/multiselect';
 import Button from 'primevue/button';
+import ToggleSwitch from 'primevue/toggleswitch';
 import DataTable from 'primevue/datatable';
 import Column from 'primevue/column';
 import Tag from 'primevue/tag';
@@ -25,6 +26,7 @@ import Toast from 'primevue/toast';
 import ProgressBar from 'primevue/progressbar';
 import InfoPopover from '@/Components/InfoPopover.vue';
 import SendScheduleModal from '@/Pages/Reports/Partials/SendScheduleModal.vue';
+import FacultyWeekGrid from '@/Components/Scheduling/FacultyWeekGrid.vue';
 import { useTheme } from '@/composables/useTheme';
 
 const { theme } = useTheme();
@@ -47,6 +49,46 @@ const props = defineProps({
         type: Object,
         default: () => ({ academic_term_id: null, academic_year: null, semester: null, is_finalized: false }),
     },
+    // Set teaching hours for this faculty member, as editable rows of
+    // { days: ['Mon', ...], start_time: '08:00', end_time: '12:00' }.
+    // Empty = available any time. See FacultyController@show.
+    facultyAvailability: { type: Array, default: () => [] },
+    // Class hours / Available Days of the viewed term's School Year — the
+    // Workload tab's Grid view lays out on it (see FacultyController@show).
+    schedulingWindow: {
+        type: Object,
+        default: () => ({ start_time: '07:00', end_time: '17:00', available_days: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'], interval_minutes: 30 }),
+    },
+    // SYSTEM ROLES — what this person is besides Faculty (Registrar / OIC of a
+    // college / ...), from FacultyController@show. Everyone sees the badges;
+    // only an Administrator (canManage) gets the editor in Edit Faculty.
+    systemRoles: {
+        type: Object,
+        default: () => ({ canManage: false, roles: [], hasLogin: false, collegeId: null, departmentIds: [], isAdministratorLogin: false, linkableLogin: false, assignable: [] }),
+    },
+    allDepartments: { type: Array, default: () => [] },
+});
+
+/* Presentation helpers — college color pill / ID badge, same look as the
+   Faculty list, Subjects and Curriculum pages. */
+const collegeColorValue = computed(() => {
+    const c = props.faculty?.college?.color;
+    return /^#[0-9a-f]{6}$/i.test(c ?? '') ? c : null;
+});
+const collegePillStyle = computed(() => ({
+    backgroundColor: `${collegeColorValue.value ?? '#94A3B8'}${isDark.value ? '33' : '22'}`,
+}));
+const idBadgeStyle = computed(() => {
+    const color = collegeColorValue.value ?? '#64748B';
+    const r = parseInt(color.slice(1, 3), 16);
+    const g = parseInt(color.slice(3, 5), 16);
+    const b = parseInt(color.slice(5, 7), 16);
+    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+
+    return { backgroundColor: color, color: luminance > 0.62 ? '#1E293B' : '#FFFFFF' };
+});
+const subjectRowStyle = () => ({
+    boxShadow: `inset 4px 0 0 0 ${collegeColorValue.value ?? '#CBD5E1'}`,
 });
 
 const toast = useToast();
@@ -100,6 +142,11 @@ const sendScheduleTerm = computed(() => {
     };
 });
 
+// Assigned Subjects: Table (default) or the weekly Grid. Print follows
+// whichever is showing — the Grid prints the same one-page landscape
+// timetable as Reports > Schedule by Faculty > Grid.
+const workloadView = ref('table');
+
 function printFacultySchedule() {
     if (!props.scheduleMeta.academic_year) return;
     window.open(
@@ -108,6 +155,7 @@ function printFacultySchedule() {
             faculty_id: [props.faculty.id],
             academic_year: props.scheduleMeta.academic_year,
             semester: props.scheduleMeta.semester,
+            ...(workloadView.value === 'grid' ? { view_mode: 'grid' } : {}),
         }),
         '_blank',
     );
@@ -140,6 +188,15 @@ const facultyForm = useForm({
     email: props.faculty.email,
     contact_number: props.faculty.contact_number,
     remarks: props.faculty.remarks,
+    // System roles (Administrator-only; stripped from the request otherwise).
+    system_roles: [...props.systemRoles.roles],
+    role_college_id: props.systemRoles.collegeId ?? props.faculty.college_id ?? null,
+    role_oversees_all_departments: !(props.systemRoles.departmentIds?.length > 0),
+    role_department_ids: [...(props.systemRoles.departmentIds ?? [])],
+}).transform((data) => {
+    if (props.systemRoles.canManage) return data;
+    const { system_roles, role_college_id, role_oversees_all_departments, role_department_ids, ...rest } = data;
+    return rest;
 });
 
 // Whichever workload measurement the institution uses — 'units'
@@ -181,8 +238,56 @@ const openEdit = () => {
     facultyForm.email = props.faculty.email;
     facultyForm.contact_number = props.faculty.contact_number;
     facultyForm.remarks = props.faculty.remarks;
+    facultyForm.system_roles = [...props.systemRoles.roles];
+    facultyForm.role_college_id = props.systemRoles.collegeId ?? props.faculty.college_id ?? null;
+    facultyForm.role_oversees_all_departments = !(props.systemRoles.departmentIds?.length > 0);
+    facultyForm.role_department_ids = [...(props.systemRoles.departmentIds ?? [])];
     editVisible.value = true;
 };
+
+/* System roles editor ------------------------------------------------ */
+const ROLE_HINTS = {
+    Registrar: 'Full registrar access across every college.',
+    'Assistant Dean': 'GenEd / Minor scheduling across colleges.',
+    Dean: 'Runs one whole college.',
+    OIC: 'Officer-in-charge of a college (or some of its departments).',
+};
+const toggleSystemRole = (role, checked) => {
+    const next = new Set(facultyForm.system_roles);
+    if (checked) {
+        next.add(role);
+        // A college has a Dean OR an OIC, never both on one person.
+        if (role === 'Dean') next.delete('OIC');
+        if (role === 'OIC') next.delete('Dean');
+    } else {
+        next.delete(role);
+    }
+    facultyForm.system_roles = [...next];
+};
+const needsRoleCollege = computed(() => facultyForm.system_roles.some((r) => r === 'Dean' || r === 'OIC'));
+const isOicSelected = computed(() => facultyForm.system_roles.includes('OIC'));
+const roleDepartments = computed(() => props.allDepartments.filter((d) => d.college_id === facultyForm.role_college_id));
+watch(
+    () => facultyForm.role_college_id,
+    (id, old) => {
+        if (old !== undefined && id !== old) facultyForm.role_department_ids = [];
+    },
+);
+const collegeNameById = (id) => props.colleges.find((c) => c.id === id)?.name ?? (id === props.faculty.college_id ? props.faculty.college?.name : null);
+
+// Header badges: "Registrar", "OIC · College of Computer Studies", ...
+const roleBadges = computed(() =>
+    props.systemRoles.roles.map((role) => {
+        const scoped = role === 'Dean' || role === 'OIC';
+        const college = scoped ? collegeNameById(props.systemRoles.collegeId) : null;
+        return { role, label: college ? `${role} · ${college}` : role };
+    }),
+);
+const loginNote = computed(() => {
+    if (props.systemRoles.hasLogin) return 'Changes apply to this person\'s existing login. Remove every role to make it a plain faculty login again.';
+    if (props.systemRoles.linkableLogin) return 'An account with this email already exists. It will be linked to this faculty record, so they keep one login.';
+    return 'This person has no login yet. Saving a role creates one using the email above and sends a set-password invitation.';
+});
 
 const closeEdit = () => {
     editVisible.value = false;
@@ -229,6 +334,147 @@ const onSubjectFilter = (event) => {
         }
     });
 };
+
+/* ------------------------------------------------------------------ */
+/* Availability tab (set teaching hours)                               */
+/* ------------------------------------------------------------------ */
+
+const ALL_DAY_ORDER = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+// Deep copy so editing rows never mutates the prop.
+function cloneAvailability(rows) {
+    return (rows ?? []).map((row) => ({
+        days: [...row.days],
+        start_time: row.start_time,
+        end_time: row.end_time,
+    }));
+}
+
+const availabilityForm = useForm({
+    availability: cloneAvailability(props.facultyAvailability),
+});
+
+// Re-sync after a save (Inertia hands back fresh props).
+watch(
+    () => props.facultyAvailability,
+    (rows) => {
+        availabilityForm.availability = cloneAvailability(rows);
+        availabilityForm.clearErrors();
+    },
+);
+
+const availabilityDayOptions = computed(() => props.schedulingWindow.available_days ?? ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']);
+
+// Off = no restriction (no rows saved); on = only the rows below.
+const hasAvailabilityLimit = computed({
+    get: () => availabilityForm.availability.length > 0,
+    set: (on) => {
+        if (!on) {
+            availabilityForm.availability = [];
+        } else if (availabilityForm.availability.length === 0) {
+            addAvailabilityWindow();
+        }
+    },
+});
+
+// The Term Setup class hours always win: an availability time outside
+// them is pulled back to the nearest class-hour boundary (e.g. term is
+// 8:00 AM-7:30 PM, so 7:00 AM becomes 8:00 AM and 8:00 PM becomes 7:30 PM).
+const classStart = computed(() => String(props.schedulingWindow.start_time).slice(0, 5));
+const classEnd = computed(() => String(props.schedulingWindow.end_time).slice(0, 5));
+
+const clampRow = (row) => {
+    const clamp = (value) => (value ? (value < classStart.value ? classStart.value : value > classEnd.value ? classEnd.value : value) : value);
+    row.start_time = clamp(row.start_time);
+    row.end_time = clamp(row.end_time);
+};
+
+const addAvailabilityWindow = () => {
+    const row = {
+        days: [...availabilityDayOptions.value],
+        start_time: '08:00',
+        end_time: '12:00',
+    };
+    clampRow(row);
+    availabilityForm.availability.push(row);
+};
+
+const removeAvailabilityWindow = (index) => {
+    availabilityForm.availability.splice(index, 1);
+};
+
+const toggleAvailabilityDay = (row, day) => {
+    const at = row.days.indexOf(day);
+    if (at === -1) {
+        row.days.push(day);
+        row.days.sort((a, b) => ALL_DAY_ORDER.indexOf(a) - ALL_DAY_ORDER.indexOf(b));
+    } else {
+        row.days.splice(at, 1);
+    }
+};
+
+const normalizeAvailability = (rows) =>
+    JSON.stringify(
+        (rows ?? [])
+            .map((row) => ({ days: [...row.days].sort(), start_time: row.start_time, end_time: row.end_time }))
+            .sort((a, b) => (a.start_time + a.days.join()).localeCompare(b.start_time + b.days.join())),
+    );
+
+const isAvailabilityDirty = computed(
+    () => normalizeAvailability(availabilityForm.availability) !== normalizeAvailability(props.facultyAvailability),
+);
+
+const saveAvailability = () => {
+    availabilityForm.availability.forEach(clampRow);
+    availabilityForm.put(route('scheduling.faculty.availability.update', props.faculty.id), {
+        preserveScroll: true,
+    });
+};
+
+// "08:00" -> "8:00 AM"
+const to12Hour = (hhmm) => {
+    if (!hhmm) return '';
+    const [h, m] = hhmm.split(':').map(Number);
+    return `${((h + 11) % 12) + 1}:${String(m).padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`;
+};
+
+const toMinutes = (hhmm) => {
+    const [h, m] = (hhmm || '0:0').split(':').map(Number);
+    return h * 60 + m;
+};
+
+// Read-only summary lines for the Information tab, e.g.
+// "Mon, Tue, Wed, Thu, Fri · 8:00 AM – 12:00 PM".
+const availabilitySummary = computed(() =>
+    props.facultyAvailability.map((row) => ({
+        days: row.days.join(', '),
+        range: `${to12Hour(row.start_time)} – ${to12Hour(row.end_time)}`,
+    })),
+);
+
+// Live weekly preview: one bar per class day across the school's class
+// hours, with the available windows drawn as coloured blocks.
+const availabilityPreview = computed(() => {
+    const dayStart = toMinutes(props.schedulingWindow.start_time);
+    const dayEnd = toMinutes(props.schedulingWindow.end_time);
+    const span = Math.max(dayEnd - dayStart, 1);
+
+    return availabilityDayOptions.value.map((day) => ({
+        day,
+        blocks: availabilityForm.availability
+            .filter((row) => row.days.includes(day) && row.start_time && row.end_time && row.end_time > row.start_time)
+            .map((row) => {
+                const left = Math.max(toMinutes(row.start_time) - dayStart, 0);
+                const right = Math.min(toMinutes(row.end_time) - dayStart, span);
+                return {
+                    left: (left / span) * 100,
+                    width: Math.max(((right - left) / span) * 100, 0),
+                    label: `${to12Hour(row.start_time)} – ${to12Hour(row.end_time)}`,
+                };
+            }),
+    }));
+});
+
 const savingQualifications = ref(false);
 
 // Groups the (already relevance-ordered — see FacultyController::show())
@@ -729,7 +975,7 @@ const saveEditPlacement = async (placement, confirmedKeys = {}) => {
             <span class="text-lg font-semibold text-[#1E293B]">Faculty Details</span>
         </template>
 
-        <div class="max-w-6xl mx-auto w-full" :class="isDark ? 'dark-scope' : ''">
+        <div class="w-full" :class="isDark ? 'dark-scope' : ''">
             <!-- Back link -->
             <div class="mb-4">
                 <BackLink :href="route('scheduling.faculty')" label="Back to Faculty" />
@@ -760,29 +1006,53 @@ const saveEditPlacement = async (placement, confirmedKeys = {}) => {
                             ]"
                         />
                     </h1>
-                    <p class="mt-1 text-slate-500">
-                        {{ faculty.faculty_id }} &middot; {{ faculty.college?.name || '—' }} &middot;
-                        {{ faculty.employment_type }}
-                    </p>
+                    <div class="mt-2 flex flex-wrap items-center gap-2">
+                        <span
+                            class="inline-flex items-center rounded-lg px-2.5 py-1 text-xs font-bold tracking-wide"
+                            :style="idBadgeStyle"
+                        >{{ faculty.faculty_id }}</span>
+                        <span
+                            v-if="faculty.college?.name"
+                            class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-semibold text-slate-700"
+                            :style="collegePillStyle"
+                        >
+                            <span class="h-1.5 w-1.5 rounded-full" :style="{ backgroundColor: collegeColorValue ?? '#94A3B8' }"></span>
+                            {{ faculty.college.name }}
+                        </span>
+                        <span v-else class="inline-flex rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-semibold text-amber-800">General Education</span>
+                        <span
+                            class="inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold"
+                            :class="faculty.employment_type === 'Full-time' ? 'bg-blue-100 text-blue-700' : 'bg-violet-100 text-violet-700'"
+                        >{{ faculty.employment_type }}</span>
+                        <span
+                            class="inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold"
+                            :class="faculty.status === 'Active' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700'"
+                        >{{ faculty.status }}</span>
+                    </div>
+                    <div v-if="roleBadges.length" class="mt-2 flex flex-wrap gap-1.5">
+                        <span
+                            v-for="b in roleBadges"
+                            :key="b.role"
+                            class="inline-flex items-center gap-1 rounded-full bg-indigo-100 px-2.5 py-0.5 text-xs font-semibold text-indigo-700"
+                        >
+                            <i class="pi pi-shield text-[10px]"></i>{{ b.label }}
+                        </span>
+                    </div>
                 </div>
-                <Tag
-                    :value="faculty.status"
-                    :severity="faculty.status === 'Active' ? 'success' : 'danger'"
-                    class="!text-sm"
-                />
                 </div>
             </div>
 
-            <div class="neu-card rounded-2xl transition-colors duration-300">
+            <div class="neu-card rounded-2xl p-4 transition-colors duration-300">
             <Card
                 class="!rounded-2xl !bg-transparent !border-0 !shadow-none"
-                :pt="{ body: { class: '!bg-transparent' } }"
+                :pt="{ body: { class: '!bg-transparent !p-0' }, content: { class: '!p-0' } }"
             >
                 <template #content>
                     <Tabs v-model:value="activeTab">
                         <TabList>
                             <Tab value="information">Information</Tab>
                             <Tab value="qualifications">Teaching Qualifications</Tab>
+                            <Tab value="availability">Availability</Tab>
                             <Tab value="workload">Workload</Tab>
                         </TabList>
 
@@ -816,13 +1086,25 @@ const saveEditPlacement = async (placement, confirmedKeys = {}) => {
                                     </div>
                                     <div class="neu-inset rounded-xl p-4">
                                         <p class="text-xs font-semibold tracking-wider text-slate-400 uppercase">Employment Type</p>
-                                        <p class="mt-1 text-slate-800 font-medium">{{ faculty.employment_type }}</p>
+                                        <p class="mt-1.5">
+                                            <span
+                                                class="inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold"
+                                                :class="faculty.employment_type === 'Full-time' ? 'bg-blue-100 text-blue-700' : 'bg-violet-100 text-violet-700'"
+                                            >{{ faculty.employment_type }}</span>
+                                        </p>
                                     </div>
                                     <div class="neu-inset rounded-xl p-4">
                                         <p class="text-xs font-semibold tracking-wider text-slate-400 uppercase">College</p>
                                         <p class="mt-1">
-                                            <span v-if="faculty.college?.name" class="text-slate-800 font-medium">{{ faculty.college.name }}</span>
-                                            <Tag v-else value="General Education" severity="warning" />
+                                            <span
+                                                v-if="faculty.college?.name"
+                                                class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-semibold text-slate-700"
+                                                :style="collegePillStyle"
+                                            >
+                                                <span class="h-1.5 w-1.5 rounded-full" :style="{ backgroundColor: collegeColorValue ?? '#94A3B8' }"></span>
+                                                {{ faculty.college.name }}
+                                            </span>
+                                            <span v-else class="inline-flex rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-semibold text-amber-800">General Education</span>
                                         </p>
                                     </div>
                                     <div v-if="!faculty.college?.name" class="sm:col-span-2 flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2.5">
@@ -843,6 +1125,18 @@ const saveEditPlacement = async (placement, confirmedKeys = {}) => {
                                     <div class="neu-inset rounded-xl p-4">
                                         <p class="text-xs font-semibold tracking-wider text-slate-400 uppercase">Contact Number</p>
                                         <p class="mt-1 text-slate-800 font-medium">{{ faculty.contact_number || '—' }}</p>
+                                    </div>
+                                    <div class="neu-inset rounded-xl p-4 sm:col-span-2 lg:col-span-3">
+                                        <p class="text-xs font-semibold tracking-wider text-slate-400 uppercase">Availability</p>
+                                        <p v-if="!availabilitySummary.length" class="mt-1 text-slate-800 font-medium">Any time (no restriction)</p>
+                                        <ul v-else class="mt-1 flex flex-col gap-0.5">
+                                            <li v-for="(line, i) in availabilitySummary" :key="i" class="text-slate-800 font-medium">
+                                                {{ line.days }} <span class="text-slate-400">&middot;</span> {{ line.range }}
+                                            </li>
+                                        </ul>
+                                        <button type="button" class="mt-1 text-xs text-teal-600 hover:underline font-medium" @click="activeTab = 'availability'">
+                                            {{ canEdit ? 'Change availability' : 'View availability' }}
+                                        </button>
                                     </div>
                                     <div class="neu-inset rounded-xl p-4 sm:col-span-2 lg:col-span-3">
                                         <p class="text-xs font-semibold tracking-wider text-slate-400 uppercase">Remarks</p>
@@ -896,8 +1190,9 @@ const saveEditPlacement = async (placement, confirmedKeys = {}) => {
                                 <DataTable
                                     :value="assignedSubjects"
                                     dataKey="id"
-                                    class="neu-inset neu-table rounded-xl overflow-hidden mt-4"
+                                    class="neu-inset neu-table details-table w-full rounded-xl overflow-hidden mt-4"
                                     :class="isDark ? 'neu-table-dark' : ''"
+                                    :rowStyle="subjectRowStyle"
                                     stripedRows
                                 >
                                     <template #empty>
@@ -905,15 +1200,25 @@ const saveEditPlacement = async (placement, confirmedKeys = {}) => {
                                             <p class="text-slate-500 font-medium text-sm">No subjects assigned yet.</p>
                                         </div>
                                     </template>
-                                    <Column field="subject_code" header="Subject Code" style="width: 10rem" />
-                                    <Column field="subject_title" header="Subject Title" />
+                                    <Column header="Subject Code" style="width: 10rem">
+                                        <template #body="{ data }">
+                                            <span class="inline-flex items-center justify-center whitespace-nowrap rounded-lg bg-slate-500 px-2.5 py-1 text-xs font-bold tracking-wide text-white">{{ data.subject_code }}</span>
+                                        </template>
+                                    </Column>
+                                    <Column header="Subject Title" style="min-width: 16rem">
+                                        <template #body="{ data }">
+                                            <span class="text-[15px] font-semibold leading-snug text-[#1E293B]">{{ data.subject_title }}</span>
+                                        </template>
+                                    </Column>
                                     <Column header="Category" style="width: 11rem">
-                                        <template #body="{ data }"><Tag :value="data.category" severity="info" /></template>
+                                        <template #body="{ data }">
+                                            <span class="inline-flex whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-semibold" :class="data.category === 'Major' ? 'bg-blue-100 text-blue-700' : data.category === 'General Education' ? 'bg-sky-100 text-sky-700' : 'bg-violet-100 text-violet-700'">{{ data.category }}</span>
+                                        </template>
                                     </Column>
-                                    <Column header="Units" style="width: 7rem">
-                                        <template #body="{ data }">{{ data.units }}</template>
+                                    <Column header="Units" style="width: 7rem" headerClass="details-num" bodyClass="details-num">
+                                        <template #body="{ data }"><span class="font-semibold text-[#1E293B]">{{ data.units }}</span></template>
                                     </Column>
-                                    <Column header="Remove" style="width: 7rem">
+                                    <Column header="Remove" style="width: 7rem" headerClass="details-num" bodyClass="details-num">
                                         <template #body="{ data }">
                                             <Button
                                                 icon="pi pi-trash"
@@ -931,6 +1236,134 @@ const saveEditPlacement = async (placement, confirmedKeys = {}) => {
                                 <p v-if="isQualificationsDirty" class="text-xs text-amber-600 mt-2">
                                     You have unsaved changes — click "Save Qualifications" to apply them.
                                 </p>
+                            </TabPanel>
+
+                            <!-- AVAILABILITY -->
+                            <TabPanel value="availability">
+                                <!-- Mode card: Any time vs Set times only -->
+                                <div class="neu-inset flex flex-wrap items-center justify-between gap-4 rounded-xl p-4">
+                                    <div class="flex min-w-0 flex-1 basis-96 items-start gap-3">
+                                        <span class="mt-0.5 inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl" :class="hasAvailabilityLimit ? 'bg-teal-100 text-teal-700' : 'bg-emerald-100 text-emerald-700'">
+                                            <i class="pi" :class="hasAvailabilityLimit ? 'pi-clock' : 'pi-check-circle'"></i>
+                                        </span>
+                                        <div class="min-w-0">
+                                            <p class="font-semibold text-[#1E293B]">Teaching Availability</p>
+                                            <p class="mt-0.5 text-sm text-slate-500">
+                                                Days and times this faculty member can teach (e.g. a part-timer who is only free in the
+                                                morning). Auto Generate and manual scheduling only use these times. Class hours in Term
+                                                Setup are
+                                                <span class="font-semibold text-slate-600">{{ to12Hour(classStart) }} – {{ to12Hour(classEnd) }}</span>;
+                                                anything outside is adjusted automatically.
+                                            </p>
+                                        </div>
+                                    </div>
+                                    <div class="flex shrink-0 items-center gap-3 rounded-full px-3 py-1.5" :class="hasAvailabilityLimit ? 'bg-teal-50' : 'bg-emerald-50'">
+                                        <span class="text-xs font-semibold" :class="hasAvailabilityLimit ? 'text-teal-700' : 'text-emerald-700'">{{ hasAvailabilityLimit ? 'Set times only' : 'Any time' }}</span>
+                                        <ToggleSwitch v-model="hasAvailabilityLimit" :disabled="!canEdit" />
+                                    </div>
+                                </div>
+
+                                <div v-if="hasAvailabilityLimit" class="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-5">
+                                    <!-- Time windows -->
+                                    <div class="flex flex-col gap-3 xl:col-span-3">
+                                        <div
+                                            v-for="(row, index) in availabilityForm.availability"
+                                            :key="index"
+                                            class="neu-inset flex flex-col gap-3 rounded-xl border-l-4 border-teal-500 p-4"
+                                        >
+                                            <div class="flex items-center justify-between">
+                                                <p class="text-xs font-semibold uppercase tracking-wider text-slate-400">Time window {{ index + 1 }}</p>
+                                                <Button
+                                                    v-if="canEdit"
+                                                    icon="pi pi-trash"
+                                                    severity="danger"
+                                                    text
+                                                    rounded
+                                                    size="small"
+                                                    aria-label="Remove time window"
+                                                    @click="removeAvailabilityWindow(index)"
+                                                />
+                                            </div>
+                                            <div class="flex flex-wrap items-center gap-1.5">
+                                                <button
+                                                    v-for="day in availabilityDayOptions"
+                                                    :key="day"
+                                                    type="button"
+                                                    :disabled="!canEdit"
+                                                    class="rounded-full border px-3.5 py-1 text-xs font-semibold transition-colors"
+                                                    :class="row.days.includes(day)
+                                                        ? 'bg-teal-600 border-teal-600 text-white'
+                                                        : 'bg-white border-slate-300 text-slate-500 hover:border-teal-400'"
+                                                    @click="toggleAvailabilityDay(row, day)"
+                                                >
+                                                    {{ day }}
+                                                </button>
+                                            </div>
+                                            <div class="flex flex-wrap items-center gap-2">
+                                                <input v-model="row.start_time" type="time" :min="classStart" :max="classEnd" :disabled="!canEdit" class="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-800" @change="clampRow(row)" />
+                                                <span class="text-sm text-slate-400">to</span>
+                                                <input v-model="row.end_time" type="time" :min="classStart" :max="classEnd" :disabled="!canEdit" class="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-800" @change="clampRow(row)" />
+                                            </div>
+                                            <small v-if="availabilityForm.errors[`availability.${index}.days`]" class="text-red-500">Pick at least one day.</small>
+                                            <small v-if="availabilityForm.errors[`availability.${index}.end_time`]" class="text-red-500">End time must be after the start time.</small>
+                                            <small v-if="availabilityForm.errors[`availability.${index}.start_time`]" class="text-red-500">Enter a valid start time.</small>
+                                        </div>
+
+                                        <div v-if="canEdit" class="flex flex-wrap items-center gap-3">
+                                            <Button label="Add another time window" icon="pi pi-plus" size="small" severity="secondary" outlined @click="addAvailabilityWindow" />
+                                            <p class="text-xs text-slate-400">
+                                                Only needed if the schedule differs by day (e.g. Mon/Wed/Fri mornings, Tue/Thu afternoons).
+                                            </p>
+                                        </div>
+                                    </div>
+
+                                    <!-- Weekly preview -->
+                                    <div class="neu-inset rounded-xl p-4 xl:col-span-2">
+                                        <p class="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Weekly preview</p>
+                                        <div class="flex flex-col gap-2">
+                                            <div v-for="item in availabilityPreview" :key="item.day" class="flex items-center gap-3">
+                                                <span class="w-10 text-xs font-semibold text-slate-500">{{ item.day }}</span>
+                                                <div class="relative h-6 flex-1 overflow-hidden rounded-md bg-slate-200/70">
+                                                    <div
+                                                        v-for="(block, i) in item.blocks"
+                                                        :key="i"
+                                                        class="absolute top-0 h-6 rounded-md bg-teal-500/80"
+                                                        :style="{ left: block.left + '%', width: block.width + '%' }"
+                                                        :title="block.label"
+                                                    ></div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="mt-2 flex items-center justify-between pl-[3.25rem] text-[11px] text-slate-400">
+                                            <span>{{ to12Hour(schedulingWindow.start_time) }}</span>
+                                            <span>{{ to12Hour(schedulingWindow.end_time) }}</span>
+                                        </div>
+                                        <div class="mt-3 flex items-center gap-4 text-xs text-slate-500">
+                                            <span class="inline-flex items-center gap-1.5"><span class="h-2.5 w-2.5 rounded bg-teal-500/80"></span>Available</span>
+                                            <span class="inline-flex items-center gap-1.5"><span class="h-2.5 w-2.5 rounded bg-slate-300"></span>Not available</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div v-else class="mt-4 flex items-center gap-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+                                    <i class="pi pi-check-circle"></i>
+                                    No restriction. This faculty member can be scheduled any time within the school's class hours.
+                                </div>
+
+                                <small v-if="availabilityForm.errors.availability" class="mt-2 block text-red-500">{{ availabilityForm.errors.availability }}</small>
+
+                                <div class="mt-4 flex items-center justify-end gap-3">
+                                    <p v-if="isAvailabilityDirty" class="text-xs text-amber-600">You have unsaved availability changes.</p>
+                                    <Button
+                                        v-if="canEdit"
+                                        label="Save Availability"
+                                        icon="pi pi-check"
+                                        severity="success"
+                                        :loading="availabilityForm.processing"
+                                        :disabled="!isAvailabilityDirty"
+                                        @click="saveAvailability"
+                                    />
+                                    <Tag v-else value="View only — outside your College" severity="secondary" />
+                                </div>
                             </TabPanel>
 
                             <!-- WORKLOAD -->
@@ -1021,15 +1454,21 @@ const saveEditPlacement = async (placement, confirmedKeys = {}) => {
 
                                 <!-- Assigned Subjects list — what actually makes up Current Load -->
                                 <div class="mt-8">
-                                    <h3 class="mb-3 text-sm font-semibold tracking-wide text-slate-500 uppercase">
-                                        Assigned Subjects — {{ assignedPlacements.length }}
-                                    </h3>
+                                    <div class="mb-3 flex items-center justify-between gap-3">
+                                        <h3 class="text-sm font-semibold tracking-wide text-slate-500 uppercase">
+                                            Assigned Subjects — {{ assignedPlacements.length }}
+                                        </h3>
+                                        <div v-if="assignedPlacements.length" class="flex gap-1 rounded-xl p-1 neu-inset">
+                                            <button type="button" class="rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors" :class="workloadView === 'table' ? 'bg-emerald-500 text-white' : (isDark ? 'text-slate-400' : 'text-slate-500')" @click="workloadView = 'table'">Table</button>
+                                            <button type="button" class="rounded-lg px-3 py-1.5 text-xs font-semibold transition-colors" :class="workloadView === 'grid' ? 'bg-emerald-500 text-white' : (isDark ? 'text-slate-400' : 'text-slate-500')" @click="workloadView = 'grid'">Grid</button>
+                                        </div>
+                                    </div>
 
                                     <DataTable
-                                        v-if="assignedPlacements.length"
+                                        v-if="assignedPlacements.length && workloadView === 'table'"
                                         :value="assignedPlacements"
                                         dataKey="id"
-                                        class="text-sm neu-inset neu-table rounded-xl overflow-hidden"
+                                        class="text-sm neu-inset neu-table details-table w-full rounded-xl overflow-hidden"
                                         :class="isDark ? 'neu-table-dark' : ''"
                                         stripedRows
                                     >
@@ -1172,6 +1611,14 @@ const saveEditPlacement = async (placement, confirmedKeys = {}) => {
                                             </template>
                                         </Column>
                                     </DataTable>
+
+                                    <!-- Grid view — weekly timetable, blocks colored by College. -->
+                                    <FacultyWeekGrid
+                                        v-else-if="assignedPlacements.length"
+                                        :placements="assignedPlacements"
+                                        :scheduling-window="schedulingWindow"
+                                        :is-dark="isDark"
+                                    />
 
                                     <div
                                         v-else
@@ -1347,6 +1794,78 @@ const saveEditPlacement = async (placement, confirmedKeys = {}) => {
                     <label class="text-sm font-medium text-slate-700">Remarks</label>
                     <Textarea v-model="facultyForm.remarks" autoResize rows="3" :invalid="!!facultyForm.errors.remarks" class="w-full" />
                 </div>
+
+                <!-- SYSTEM ROLES — Administrator only -->
+                <div v-if="systemRoles.canManage" class="sm:col-span-2 rounded-xl border border-slate-200 p-4">
+                    <p class="text-sm font-semibold text-slate-700">System roles</p>
+                    <p class="mb-3 text-xs text-slate-400">
+                        Make this person a Registrar, Dean, OIC or Assistant Dean too. They stay faculty and keep a “My Schedule” page.
+                    </p>
+
+                    <p v-if="systemRoles.isAdministratorLogin" class="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                        This person's login is an Administrator account — manage its roles from Users instead.
+                    </p>
+                    <template v-else>
+                        <div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                            <label
+                                v-for="role in systemRoles.assignable"
+                                :key="role"
+                                class="flex cursor-pointer items-start gap-2 rounded-lg border border-slate-200 px-3 py-2 text-sm"
+                            >
+                                <input
+                                    type="checkbox"
+                                    class="mt-1 accent-emerald-500"
+                                    :checked="facultyForm.system_roles.includes(role)"
+                                    @change="toggleSystemRole(role, $event.target.checked)"
+                                />
+                                <span>
+                                    <span class="block font-medium text-slate-700">{{ role }}</span>
+                                    <span class="block text-xs text-slate-400">{{ ROLE_HINTS[role] }}</span>
+                                </span>
+                            </label>
+                        </div>
+                        <small v-if="facultyForm.errors.system_roles" class="mt-2 block text-red-500">{{ facultyForm.errors.system_roles }}</small>
+
+                        <div v-if="needsRoleCollege" class="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                            <div class="flex flex-col gap-1">
+                                <label class="text-sm font-medium text-slate-700">College they lead <span class="text-red-500">*</span></label>
+                                <Select
+                                    v-model="facultyForm.role_college_id"
+                                    :options="colleges"
+                                    optionLabel="name"
+                                    optionValue="id"
+                                    placeholder="Select college"
+                                    :invalid="!!facultyForm.errors.role_college_id"
+                                    class="w-full"
+                                    :pt="{ overlay: { class: isDark ? 'dark-scope' : '' } }"
+                                />
+                                <small v-if="facultyForm.errors.role_college_id" class="text-red-500">{{ facultyForm.errors.role_college_id }}</small>
+                            </div>
+
+                            <div v-if="isOicSelected" class="flex flex-col gap-1">
+                                <label class="text-sm font-medium text-slate-700">Departments</label>
+                                <label class="flex items-center gap-2 text-sm text-slate-600">
+                                    <ToggleSwitch v-model="facultyForm.role_oversees_all_departments" />
+                                    All departments in the college
+                                </label>
+                                <MultiSelect
+                                    v-if="!facultyForm.role_oversees_all_departments"
+                                    v-model="facultyForm.role_department_ids"
+                                    :options="roleDepartments"
+                                    optionLabel="name"
+                                    optionValue="id"
+                                    placeholder="Select departments"
+                                    :invalid="!!facultyForm.errors.role_department_ids"
+                                    class="w-full"
+                                    :pt="{ overlay: { class: isDark ? 'dark-scope' : '' } }"
+                                />
+                                <small v-if="facultyForm.errors.role_department_ids" class="text-red-500">{{ facultyForm.errors.role_department_ids }}</small>
+                            </div>
+                        </div>
+
+                        <p class="mt-3 text-xs text-slate-400"><i class="pi pi-info-circle mr-1"></i>{{ loginNote }}</p>
+                    </template>
+                </div>
             </form>
 
             <template #footer>
@@ -1368,6 +1887,18 @@ const saveEditPlacement = async (placement, confirmedKeys = {}) => {
 </template>
 
 <style scoped>
+.details-table :deep(.p-datatable-tbody > tr > td) {
+    padding-top: 0.85rem;
+    padding-bottom: 0.85rem;
+}
+.details-table :deep(th.details-num),
+.details-table :deep(td.details-num) {
+    text-align: center;
+}
+.details-table :deep(th.details-num .p-datatable-column-header-content) {
+    justify-content: center;
+}
+
 /* Dark-mode overrides. Wrapping an element in the "dark-scope" class
    (added conditionally via isDark) recolors the shared light-mode
    Tailwind utility classes and PrimeVue component chrome used

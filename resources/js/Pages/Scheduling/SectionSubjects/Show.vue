@@ -30,6 +30,8 @@ import RoomRecommendationSelector from '@/Components/Scheduling/RoomRecommendati
 import TimeRecommendationSelector from '@/Components/Scheduling/TimeRecommendationSelector.vue';
 import { dockedEditSectionSubjectId } from '@/composables/useTimeEditDock';
 import MergeRecommendationModal from '@/Components/Scheduling/MergeRecommendationModal.vue';
+import AvailabilityModal from '@/Components/Scheduling/AvailabilityModal.vue';
+import AvailabilityPanel from '@/Components/Scheduling/AvailabilityPanel.vue';
 import RoomGrid from '@/Components/Scheduling/RoomGrid.vue';
 import LoadingSkeleton from '@/Components/LoadingSkeleton.vue';
 import SectionGrid from '@/Components/Scheduling/SectionGrid.vue';
@@ -306,15 +308,22 @@ const dayOptions = computed(() => {
 });
 
 // Quick-pick common combinations shown above the multi-select list.
-// Meetings/Week is capped at 2x (see MultiSelect's selectionLimit),
-// so only single- and double-day presets are offered here. Filtered
-// the same way as dayOptions above — a preset is only offered when
-// every day it contains is actually allowed this School Year (e.g.
-// "SAT" disappears entirely once Saturday isn't a class day).
+// These are only shortcuts — the Days dropdown itself has NO limit on
+// how many days can be ticked (panelist recommendation), so a 3-hour
+// subject can be run as MWF at 1 hour each instead of being forced
+// into 2 x 1.5 hours. End Time auto-fills as weekly hours / number of
+// days (see computeAutoEndTime), and the Weekly Hours Mismatch check
+// still compares (End - Start) x number of days against the subject's
+// required hours. Filtered the same way as dayOptions above — a
+// preset is only offered when every day it contains is actually
+// allowed this School Year (e.g. "SAT" disappears entirely once
+// Saturday isn't a class day).
 const allDayPresetDefinitions = [
     { label: 'MW', value: ['Mon', 'Wed'] },
     { label: 'TTH', value: ['Tue', 'Thu'] },
     { label: 'WF', value: ['Wed', 'Fri'] },
+    { label: 'MWF', value: ['Mon', 'Wed', 'Fri'] },
+    { label: 'TTHS', value: ['Tue', 'Thu', 'Sat'] },
     { label: 'SAT', value: ['Sat'] },
 ];
 const dayPresets = computed(() => {
@@ -399,6 +408,55 @@ const isQualifiedFor = (faculty, subject) => {
     return false;
 };
 
+// FREE / BUSY INDICATOR — same idea as the Room Grid's "Schedule Subject"
+// modal: for the Day(s) + Start/End Time currently set on THIS row, is the
+// Faculty already teaching something that overlaps? 'busy' => red blink,
+// 'free' => green blink, null => row has no Days/Start Time yet (no
+// indicator). Other Sections' classes come from activeFaculty's
+// schedule_slots (whole term, same scope Save's Faculty Conflict check
+// uses); this Section's own rows are read LIVE from `rows` instead so a
+// not-yet-saved edit on another row is respected. Same-subject classes in
+// the same Room are a combinable shared class, not a conflict.
+const hhmmToMinutes = (t) => {
+    const [h, m] = String(t).split(':').map(Number);
+    return h * 60 + (m || 0);
+};
+
+const facultySlotStatusFor = (row, facultyId) => {
+    if (!row?.start_time || !row.days?.length) return null;
+    const newStart = hhmmToMinutes(row.start_time);
+    const newEnd = row.end_time ? hhmmToMinutes(row.end_time) : newStart + 30;
+    if (!(newEnd > newStart)) return null;
+
+    const overlaps = (days, start, end) => {
+        const tokens = Array.isArray(days) ? days : String(days || '').split(',').map((d) => d.trim());
+        if (!row.days.some((d) => tokens.includes(d))) return false;
+        return hhmmToMinutes(start) < newEnd && hhmmToMinutes(end) > newStart;
+    };
+    const sharedWith = (other) => (
+        other.id === row.id
+        || other.merged_into === row.id || other.merged_into_section_subject_id === row.id
+        || (row.merged_into_section_subject_id && (row.merged_into_section_subject_id === other.id
+            || row.merged_into_section_subject_id === (other.merged_into ?? other.merged_into_section_subject_id)))
+        || (other.subject_id === row.subject_id && row.room_id && other.room_id === row.room_id)
+    );
+
+    // This Section's own rows (live values).
+    const ownIds = new Set(rows.value.map((r) => r.id));
+    const busyInOwn = rows.value.some((other) => (
+        other.faculty_id === facultyId && other.start_time && other.end_time && other.days?.length
+        && !sharedWith(other) && overlaps(other.days, other.start_time, other.end_time)
+    ));
+    if (busyInOwn) return 'busy';
+
+    // Every other Section this term.
+    const faculty = props.activeFaculty.find((f) => f.id === facultyId);
+    const busyElsewhere = (faculty?.schedule_slots ?? []).some((slot) => (
+        !ownIds.has(slot.id) && !sharedWith(slot) && overlaps(slot.days, slot.start_time, slot.end_time)
+    ));
+    return busyElsewhere ? 'busy' : 'free';
+};
+
 const facultyGroupsFor = (row) => {
     const subject = row.subject;
     const recs = recommendations[row.id]?.faculty?.recommendations ?? [];
@@ -415,6 +473,7 @@ const facultyGroupsFor = (row) => {
             confidence: r.confidence,
             currentLoad: r.current_load,
             maxUnits: r.max_teaching_units,
+            slotStatus: facultySlotStatusFor(row, r.id),
         }));
 
     const qualified = [];
@@ -436,6 +495,7 @@ const facultyGroupsFor = (row) => {
             currentLoad: faculty.current_load,
             maxUnits: faculty.max_teaching_units,
             bestMatch: isBestMatch,
+            slotStatus: facultySlotStatusFor(row, faculty.id),
         };
         if (isQualifiedFor(faculty, subject)) {
             qualified.push(option);
@@ -1621,6 +1681,63 @@ const onEndTimeChange = (row, value) => {
     clampEndTimeToMax(row);
     stateFor(row.id).hoursConfirmed = false;
     row.hours_confirmed = false; // see onDaysChange's comment above
+};
+
+/* --- Availability Check modal — one popup (Faculty + Room timetable, --- */
+/* workload, smart conflict check) so the scheduler never has to leave    */
+/* this page for the Faculty/Room pages. It is a picker only: "Use       */
+/* Selection" routes through the SAME handlers the row's own dropdowns    */
+/* use, so every existing warning/confirmation/validation still applies.  */
+
+const availabilityOpen = ref(false);
+const availabilityRowId = ref(null);
+const availabilityRow = computed(() => rows.value.find((r) => r.id === availabilityRowId.value) ?? null);
+
+const availabilityView = ref('both');
+
+const openAvailability = (row) => {
+    availabilityRowId.value = row.id;
+    availabilityView.value = 'both';
+    availabilityOpen.value = true;
+};
+
+// Header "Faculty" / "Rooms" buttons — a floating, draggable side PANEL
+// (not a modal) so the subject table stays visible while the scheduler
+// looks up who/what is free. Clicking the active button again closes it.
+const availabilityPanelOpen = ref(false);
+const availabilityPanelView = ref('faculty');
+const openAvailabilityBrowse = (view) => {
+    if (availabilityPanelOpen.value && availabilityPanelView.value === view) {
+        availabilityPanelOpen.value = false;
+        return;
+    }
+    availabilityPanelView.value = view;
+    availabilityPanelOpen.value = true;
+};
+
+const sameDays = (a, b) => {
+    const x = [...(a ?? [])].sort().join(',');
+    const y = [...(b ?? [])].sort().join(',');
+    return x === y;
+};
+
+const onAvailabilityApply = (sel) => {
+    const row = availabilityRow.value;
+    if (!row || isSectionFinalized.value) return;
+
+    if (sel.faculty_id && sel.faculty_id !== row.faculty_id) onFacultyChange(row, sel.faculty_id);
+    if (sel.room_id && sel.room_id !== row.room_id && row.delivery_mode !== 'online') onRoomChange(row, sel.room_id);
+
+    // Order matters: Days first (it auto-fills End Time), then Start
+    // (auto-fills again), then the explicit End Time last so the
+    // scheduler's chosen end wins — clampEndTimeToMax() still caps it
+    // at the curriculum's per-meeting maximum, same as typing it in.
+    const daysChanged = sel.days.length > 0 && !sameDays(sel.days, row.days);
+    if (daysChanged) onDaysChange(row, sel.days);
+    if (sel.start_time && (daysChanged || sel.start_time !== row.start_time)) onStartTimeChange(row, sel.start_time);
+    if (sel.end_time && sel.end_time !== row.end_time) onEndTimeChange(row, sel.end_time);
+
+    fetchBusyTimes(row);
 };
 
 /* --- Save Schedule — validates every row client-side, then saves        */
@@ -3571,6 +3688,177 @@ const rowStripeById = computed(() => {
     return stripes;
 });
 
+// SUBJECT ACTION PICKER — one "Split Hours" and one "Recommend" button in the
+// table toolbar replace the per-row Split / Undo Split / Recommend buttons.
+// Each opens this list so the Registrar picks the subject to act on, which
+// keeps the table rows clean. 'split' lists one entry per SUBJECT (a split
+// subject offers Undo Split); 'recommend' lists one entry per ROW so each
+// half of a split subject can be recommended separately.
+const subjectPickerMode = ref(null); // 'split' | 'recommend' | null
+const subjectPickerVisible = ref(false);
+const subjectPickerSearch = ref('');
+
+const openSubjectPicker = (mode) => {
+    subjectPickerMode.value = mode;
+    subjectPickerSearch.value = '';
+    if (mode === 'split') resetBulkSplit();
+    subjectPickerVisible.value = true;
+};
+
+// BULK SPLIT — per-subject selection + Online hours, keyed by subject_id.
+// Face-to-Face (Room) hours are always total - online, so the pair adds up
+// to the subject's required hours and no mismatch confirmation is needed.
+const bulkSplit = reactive({});
+const bulkSplitSaving = ref(false);
+
+const subjectHours = (subject) => ({
+    lecture: Number(subject?.lecture_hours) || 0,
+    lab: Number(subject?.laboratory_hours) || 0,
+});
+
+const resetBulkSplit = () => {
+    Object.keys(bulkSplit).forEach((k) => delete bulkSplit[k]);
+    rows.value.forEach((row) => {
+        if (bulkSplit[row.subject_id]) return;
+        const { lecture } = subjectHours(row.subject);
+        bulkSplit[row.subject_id] = { selected: false, online: Math.min(1, lecture), error: '' };
+    });
+};
+
+const subjectPickerEntries = computed(() => {
+    const mode = subjectPickerMode.value;
+    if (!mode) return [];
+    const q = subjectPickerSearch.value.trim().toLowerCase();
+    const matches = (row) => !q
+        || String(row.subject?.subject_code ?? '').toLowerCase().includes(q)
+        || String(row.subject?.subject_title ?? '').toLowerCase().includes(q);
+
+    if (mode === 'split') {
+        const bySubject = new Map();
+        rows.value.forEach((row) => {
+            const entry = bySubject.get(row.subject_id);
+            if (entry) entry.rows.push(row);
+            else bySubject.set(row.subject_id, { row, rows: [row] });
+        });
+        return [...bySubject.entries()]
+            .filter(([, e]) => matches(e.row))
+            .map(([subjectId, e]) => {
+                const { lecture, lab } = subjectHours(e.row.subject);
+                const total = lecture + lab;
+                const isSplit = e.rows.length > 1;
+                const onlineRow = e.rows.find((r) => r.delivery_mode === 'online');
+                const f2fRow = e.rows.find((r) => r.delivery_mode !== 'online');
+                const state = bulkSplit[subjectId] ?? { selected: false, online: 0, error: '' };
+                const online = Number(state.online) || 0;
+                return {
+                    key: `s-${subjectId}`,
+                    subjectId,
+                    row: e.row,
+                    code: e.row.subject?.subject_code,
+                    title: e.row.subject?.subject_title,
+                    hours: total,
+                    lecture,
+                    lab,
+                    isSplit,
+                    // Current breakdown of an already-split subject.
+                    currentOnline: onlineRow?.split_hours ?? null,
+                    currentF2f: f2fRow?.split_hours ?? null,
+                    // Only Lecture hours may go Online (Lab stays Face-to-Face).
+                    canSplit: !isSplit && lecture >= 1,
+                    state,
+                    f2f: total - online,
+                    invalid: online < 1 || online > lecture || total - online < 0,
+                    tag: null,
+                };
+            });
+    }
+
+    return rows.value
+        .filter(matches)
+        .map((row) => ({
+            key: `r-${row.id}`,
+            row,
+            code: row.subject?.subject_code,
+            title: row.subject?.subject_title,
+            hours: row.split_hours != null ? Number(row.split_hours) : null,
+            isSplit: false,
+            tag: isSplitRow(row) ? (row.delivery_mode === 'online' ? 'Online' : 'Face-to-Face') : null,
+            status: displayStatus(row),
+            unscheduled: rowIsUnscheduled(row),
+        }))
+        // Not-yet-scheduled subjects first — they're what Recommend is for.
+        .sort((a, b) => Number(b.unscheduled) - Number(a.unscheduled));
+});
+
+const selectedBulkEntries = computed(() => (
+    subjectPickerMode.value === 'split'
+        ? subjectPickerEntries.value.filter((e) => e.canSplit && e.state.selected)
+        : []
+));
+const splittableEntries = computed(() => (
+    subjectPickerMode.value === 'split' ? subjectPickerEntries.value.filter((e) => e.canSplit) : []
+));
+const allSplittableSelected = computed(() => (
+    splittableEntries.value.length > 0 && splittableEntries.value.every((e) => e.state.selected)
+));
+const toggleAllSplittable = () => {
+    const next = !allSplittableSelected.value;
+    splittableEntries.value.forEach((e) => { e.state.selected = next; });
+};
+const canSubmitBulkSplit = computed(() => (
+    selectedBulkEntries.value.length > 0 && selectedBulkEntries.value.every((e) => !e.invalid)
+));
+
+const submitBulkSplit = async () => {
+    if (!canSubmitBulkSplit.value || bulkSplitSaving.value) return;
+    bulkSplitSaving.value = true;
+    let done = 0;
+    let failed = 0;
+
+    // Sequential — each split locks/updates the section (and its siblings),
+    // so firing them in parallel would just race on the schedule version.
+    for (const entry of selectedBulkEntries.value) {
+        entry.state.error = '';
+        try {
+            await window.axios.post(
+                route('scheduling.section-subjects.split', [props.section.id, entry.row.id]),
+                {
+                    f2f_hours: entry.f2f,
+                    online_hours: Number(entry.state.online),
+                    hours_confirmed: true,
+                },
+            );
+            entry.state.selected = false;
+            done += 1;
+        } catch (error) {
+            failed += 1;
+            const errors = error.response?.status === 422 ? Object.values(error.response.data.errors ?? {}) : [];
+            entry.state.error = errors[0]?.[0] ?? error.response?.data?.message ?? 'Could not split this subject.';
+        }
+    }
+
+    bulkSplitSaving.value = false;
+    if (done) {
+        toast.add({
+            severity: failed ? 'warn' : 'success',
+            summary: failed ? 'Some splits saved' : 'Splits saved',
+            detail: `${done} subject${done === 1 ? '' : 's'} split into Face-to-Face and Online${failed ? `; ${failed} could not be split — see the list.` : '.'}`,
+            life: 5000,
+        });
+        refreshSchedule({ only: SPLIT_REFRESH_PROPS });
+    }
+    if (!failed) subjectPickerVisible.value = false;
+};
+
+const onSubjectPickerAction = (entry) => {
+    subjectPickerVisible.value = false;
+    if (subjectPickerMode.value === 'split') {
+        undoSplit(entry.row);
+    } else {
+        openRecommendDrawer(entry.row);
+    }
+};
+
 const openSplitModal = (row) => {
     splitModalRow.value = row;
     splitErrors.value = {};
@@ -3712,7 +4000,7 @@ const categorySeverity = (category) => (category === 'Major' ? 'info' : 'seconda
 
         <div class="max-w-[100rem] mx-auto w-full" :class="isDark ? 'dark-scope' : ''">
             <!-- Back link -->
-            <div class="mb-4">
+            <div class="mb-2">
                 <BackLink :href="route('scheduling.sections')" label="Back to Sections" />
             </div>
 
@@ -3748,7 +4036,7 @@ const categorySeverity = (category) => (category === 'Major' ? 'info' : 'seconda
             </div>
 
             <!-- Page Title -->
-            <div class="mb-6 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
+            <div class="mb-3 flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
                 <div>
                     <h1 class="text-2xl font-bold tracking-tight text-[#1E293B] flex items-center gap-2">
                         {{ sectionLabel(section) }}
@@ -3780,7 +4068,7 @@ const categorySeverity = (category) => (category === 'Major' ? 'info' : 'seconda
                         optionValue="id"
                         filter
                         placeholder="Switch section"
-                        class="mt-2 w-full sm:w-72"
+                        class="mt-1 w-full sm:w-72"
                         size="small"
                         @update:modelValue="onSwitchSection"
                     >
@@ -3936,50 +4224,30 @@ const categorySeverity = (category) => (category === 'Major' ? 'info' : 'seconda
             </div>
 
             <!-- Section Information -->
-            <div class="neu-card rounded-2xl mb-6 transition-colors duration-300">
+            <div class="neu-card rounded-2xl mb-3 transition-colors duration-300">
             <Card
                 class="!rounded-2xl !bg-transparent !border-0 !shadow-none"
-                :pt="{ body: { class: '!bg-transparent' } }"
+                :pt="{ body: { class: '!bg-transparent !p-2.5' } }"
             >
                 <template #content>
-                    <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
-                        <div class="neu-inset rounded-xl p-3">
-                            <p class="text-xs font-medium text-slate-400 uppercase tracking-wide">Major</p>
-                            <p class="mt-1 text-slate-800 font-medium">{{ section.major?.name || '—' }}</p>
-                        </div>
-                        <div class="neu-inset rounded-xl p-3">
-                            <p class="text-xs font-medium text-slate-400 uppercase tracking-wide">Curriculum</p>
-                            <p class="mt-1 text-slate-800 font-medium">{{ section.curriculum?.code || '—' }}</p>
-                        </div>
-                        <div class="neu-inset rounded-xl p-3">
-                            <p class="text-xs font-medium text-slate-400 uppercase tracking-wide">Academic Year</p>
-                            <p class="mt-1 text-slate-800 font-medium">{{ section.academic_year }}</p>
-                        </div>
-                        <!--
-                            Semester — this Section's OWN semester (2nd Sem
-                            BSIT-3A, etc.), distinct from the global "Active
-                            Academic Term" pill in the topbar (AppLayout.vue),
-                            which reflects the institution-wide active term
-                            and is NOT scoped to whichever Section is open
-                            here. Without this card, the only semester text
-                            visible on this page was that topbar pill, which
-                            made it look like Room Grid/Subjects data hadn't
-                            "switched" to the Section's real semester even
-                            though the underlying query ($section->sectionSubjects())
-                            was always correct — this card exists purely to
-                            make that already-correct semester visible.
-                        -->
-                        <div class="neu-inset rounded-xl p-3">
-                            <p class="text-xs font-medium text-slate-400 uppercase tracking-wide">Semester</p>
-                            <p class="mt-1 text-slate-800 font-medium">{{ section.semester || '—' }}</p>
-                        </div>
-                        <div class="neu-inset rounded-xl p-3">
-                            <p class="text-xs font-medium text-slate-400 uppercase tracking-wide">Year Level</p>
-                            <p class="mt-1 text-slate-800 font-medium">{{ section.year_level }}</p>
-                        </div>
-                        <div class="neu-inset rounded-xl p-3">
-                            <p class="text-xs font-medium text-slate-400 uppercase tracking-wide">Est. Students</p>
-                            <p class="mt-1 text-slate-800 font-medium">{{ section.estimated_students }}</p>
+                    <!-- Compact strip: tight tiles, small labels, single-line values
+                         (Major gets the widest column and truncates; hover shows it all). -->
+                    <!-- Semester is this Section's OWN semester, distinct from the topbar's
+                         institution-wide active-term pill. -->
+                    <div class="flex flex-wrap items-center gap-x-4 gap-y-2 px-1">
+                        <p class="min-w-0 flex-1 basis-72 truncate text-[15px] font-semibold text-[#1E293B]" :title="section.major?.name">
+                            {{ section.major?.name || '—' }}
+                        </p>
+                        <div class="flex flex-wrap items-center gap-2">
+                            <span class="rounded-md bg-slate-100 px-2 py-0.5 font-mono text-xs font-semibold text-slate-600" title="Curriculum">{{ section.curriculum?.code || '—' }}</span>
+                            <span class="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full bg-blue-100 px-2.5 py-0.5 text-xs font-semibold text-blue-700" title="Academic year">
+                                <i class="pi pi-calendar text-[10px]"></i>{{ section.academic_year }}
+                            </span>
+                            <span class="inline-flex whitespace-nowrap rounded-full bg-violet-100 px-2.5 py-0.5 text-xs font-semibold text-violet-700" title="Semester">{{ section.semester || '—' }}</span>
+                            <span class="inline-flex whitespace-nowrap rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-600" title="Year level">{{ section.year_level }}</span>
+                            <span class="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold text-slate-600" title="Estimated students">
+                                <i class="pi pi-users text-[10px]"></i>{{ section.estimated_students }} students
+                            </span>
                         </div>
                     </div>
                 </template>
@@ -4062,6 +4330,30 @@ const categorySeverity = (category) => (category === 'Major' ? 'info' : 'seconda
                     ]"
                     width="w-72"
                 />
+
+                <!-- Faculty / Rooms availability side panel (see openAvailabilityBrowse()).
+                     Right end of the tab row, i.e. directly above Add Subject. Read-only,
+                     so deliberately NOT disabled on a finalized section. -->
+                <div class="ml-auto flex items-center gap-2 pb-1">
+                    <Button
+                        label="Faculty"
+                        icon="pi pi-users"
+                        size="small"
+                        class="ss-nav-btn ss-nav-btn--faculty !bg-transparent"
+                        :class="{ 'is-active': availabilityPanelOpen && availabilityPanelView === 'faculty' }"
+                        title="See every Faculty member's schedule and availability"
+                        @click="openAvailabilityBrowse('faculty')"
+                    />
+                    <Button
+                        label="Rooms"
+                        icon="pi pi-building"
+                        size="small"
+                        class="ss-nav-btn ss-nav-btn--rooms !bg-transparent"
+                        :class="{ 'is-active': availabilityPanelOpen && availabilityPanelView === 'rooms' }"
+                        title="See every Room's schedule and availability"
+                        @click="openAvailabilityBrowse('rooms')"
+                    />
+                </div>
             </div>
 
             <!-- Room Grid tab -->
@@ -4140,6 +4432,20 @@ const categorySeverity = (category) => (category === 'Major' ? 'info' : 'seconda
                                     @click="onRefresh"
                                     aria-label="Refresh"
                                 />
+                                <button
+                                    type="button"
+                                    class="inline-flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 bg-blue-600 hover:bg-blue-700 focus-visible:ring-blue-400"
+                                    :disabled="isSectionFinalized || !rows.length"
+                                    :title="isSectionFinalized ? 'This section is finalized and locked.' : 'Pick a subject to split between Face-to-Face and Online (or undo a split)'"
+                                    @click="openSubjectPicker('split')"
+                                ><i class="pi pi-arrows-h"></i>Split Hours</button>
+                                <button
+                                    type="button"
+                                    class="inline-flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 bg-violet-600 hover:bg-violet-700 focus-visible:ring-violet-400"
+                                    :disabled="isSectionFinalized || !rows.length"
+                                    :title="isSectionFinalized ? 'This section is finalized and locked.' : 'Pick a subject to get Smart Schedule Recommendations'"
+                                    @click="openSubjectPicker('recommend')"
+                                ><i class="pi pi-sparkles"></i>Recommend</button>
                                 <Button
                                     label="Print"
                                     icon="pi pi-print"
@@ -4213,9 +4519,25 @@ const categorySeverity = (category) => (category === 'Major' ? 'info' : 'seconda
                         </template>
 
                         <Column style="width: 100%">
+                            <!-- ONE shared header for the columns below (EDP Code ... Source),
+                                 instead of repeating those labels inside every row. Only shown
+                                 on wide screens, where the row cells below line up with it
+                                 (see the .ss-* rules in <style>); on narrower screens the
+                                 header is hidden and each row keeps its own small labels. -->
+                            <template #header>
+                                <div class="ss-head">
+                                    <div class="ss-c-edp">EDP Code</div>
+                                    <div class="ss-c-code">Subject Code</div>
+                                    <div class="ss-c-title">Subject Title</div>
+                                    <div class="ss-c-cat">Category</div>
+                                    <div class="ss-c-units">Units</div>
+                                    <div class="ss-c-status">Status</div>
+                                    <div class="ss-c-source">Source</div>
+                                </div>
+                            </template>
                             <template #body="{ data }">
                                 <div
-                                    class="flex flex-col gap-1.5 py-1 px-2.5 -mx-2.5 rounded-lg transition-colors"
+                                    class="ss-card flex flex-col gap-1.5 py-1 px-2.5 -mx-2.5 rounded-lg transition-colors"
                                     :class="{ 'unscheduled-row': rowIsUnscheduled(data) }"
                                 >
                                     <!-- Line 1: EDP Code / Subject Code / Subject Title / Category / Units / Status / Source / Actions -->
@@ -4223,31 +4545,31 @@ const categorySeverity = (category) => (category === 'Major' ? 'info' : 'seconda
                                          isSplitContinuation()'s docblock — which gets the slim
                                          "Line 1 (compact)" header below instead. -->
                                     <div v-if="!isSplitContinuation(data)" class="flex flex-wrap items-center gap-x-4 gap-y-1">
-                                        <div class="min-w-[7rem]">
-                                            <p class="text-xs uppercase tracking-wide text-slate-500">EDP Code</p>
+                                        <div class="ss-c-edp min-w-[7rem]">
+                                            <p class="ss-label text-xs uppercase tracking-wide text-slate-500">EDP Code</p>
                                             <span v-if="data.edp_code" class="font-mono text-base font-bold text-indigo-700">
                                                 {{ data.edp_code }}
                                             </span>
                                             <Tag v-else value="Pending" severity="secondary" class="!text-sm" />
                                         </div>
-                                        <div class="min-w-[6rem]">
-                                            <p class="text-xs uppercase tracking-wide text-slate-500">Subject Code</p>
+                                        <div class="ss-c-code min-w-[6rem]">
+                                            <p class="ss-label text-xs uppercase tracking-wide text-slate-500">Subject Code</p>
                                             <span class="text-base font-semibold text-slate-800">{{ data.subject?.subject_code }}</span>
                                         </div>
-                                        <div class="min-w-[12rem] max-w-[22rem]">
-                                            <p class="text-xs uppercase tracking-wide text-slate-500">Subject Title</p>
+                                        <div class="ss-c-title min-w-[12rem] max-w-[22rem]">
+                                            <p class="ss-label text-xs uppercase tracking-wide text-slate-500">Subject Title</p>
                                             <span class="text-base text-slate-800">{{ data.subject?.subject_title }}</span>
                                         </div>
-                                        <div class="min-w-[6rem]">
-                                            <p class="text-xs uppercase tracking-wide text-slate-500">Category</p>
+                                        <div class="ss-c-cat min-w-[6rem]">
+                                            <p class="ss-label text-xs uppercase tracking-wide text-slate-500">Category</p>
                                             <Tag :value="data.subject?.category" :severity="categorySeverity(data.subject?.category)" class="!text-sm" />
                                         </div>
-                                        <div class="w-12">
-                                            <p class="text-xs uppercase tracking-wide text-slate-500">Units</p>
+                                        <div class="ss-c-units w-12">
+                                            <p class="ss-label text-xs uppercase tracking-wide text-slate-500">Units</p>
                                             <span class="text-base font-semibold text-slate-800">{{ data.subject?.units }}</span>
                                         </div>
-                                        <div class="min-w-[7rem]">
-                                            <p class="text-xs uppercase tracking-wide text-slate-500">Status</p>
+                                        <div class="ss-c-status min-w-[7rem]">
+                                            <p class="ss-label text-xs uppercase tracking-wide text-slate-500">Status</p>
                                             <div class="flex items-center gap-1 flex-wrap">
                                                 <Tag :value="displayStatus(data)" :severity="statusSeverity(displayStatus(data))" class="!text-[0.65rem]" />
                                                 <Tag
@@ -4277,29 +4599,19 @@ const categorySeverity = (category) => (category === 'Major' ? 'info' : 'seconda
                                                 >
                                                     Click to find best schedule
                                                 </span>
-                                                <span
-                                                    v-else-if="rowIsUnscheduled(data)"
-                                                    class="text-[0.65rem] text-blue-500 italic"
-                                                >
-                                                    Not yet scheduled
-                                                </span>
                                             </div>
                                         </div>
-                                        <div class="min-w-[6rem]">
-                                            <p class="text-xs uppercase tracking-wide text-slate-500">Source</p>
-                                            <Tag :value="data.source" :severity="sourceSeverity(data.source)" class="!text-[0.65rem]" />
+                                        <div class="ss-c-source min-w-[6rem]">
+                                            <p class="ss-label text-xs uppercase tracking-wide text-slate-500">Source</p>
+                                            <!-- Remove now lives in each schedule tray, beside Check Availability. -->
+                                            <div class="flex items-center gap-2">
+                                                <Tag :value="data.source" :severity="sourceSeverity(data.source)" class="!text-[0.65rem]" />
+                                            </div>
                                         </div>
-                                        <!-- SPLIT-DELIVERY SCHEDULING — labels which half of a split
-                                             subject this row is. Hidden for ordinary 'combined' rows
-                                             so nothing changes for subjects that were never split. -->
-                                        <div v-if="isSplitRow(data)" class="min-w-[6rem]">
-                                            <p class="text-[0.65rem] uppercase tracking-wide text-slate-400">Delivery</p>
-                                            <Tag
-                                                :value="data.delivery_mode === 'online' ? `🌐 Online (${data.split_hours}h)` : `🏫 Face-to-Face (${data.split_hours}h)`"
-                                                :severity="data.delivery_mode === 'online' ? 'info' : 'success'"
-                                                class="!text-[0.65rem]"
-                                            />
                                         </div>
+
+                                        <!-- Notes under the metadata strip: merged-into host + sibling pattern hint. -->
+                                        <div v-if="!isSplitContinuation(data) && (data.is_merged || (siblingPatternHoursFor(data) && data.end_time === computeAutoEndTime(data)))" class="ss-notes">
                                         <!-- INTELLIGENT IRREGULAR SECTION SCHEDULING — a merged row
                                              rides along on a Regular section's existing class
                                              (see mergeExclusionIds()/IrregularSectionMergeService);
@@ -4308,7 +4620,7 @@ const categorySeverity = (category) => (category === 'Major' ? 'info' : 'seconda
                                              Faculty/Room/Days/Time exactly duplicate another
                                              class's, instead of looking like an unexplained
                                              coincidence. -->
-                                        <div v-if="data.is_merged" class="min-w-[8rem]">
+                                        <div v-if="data.is_merged" class="flex items-center gap-1.5">
                                             <p class="text-[0.65rem] uppercase tracking-wide text-slate-400">Merged Into</p>
                                             <Tag
                                                 :value="data.merged_into?.section?.section_code ?? 'Regular Section'"
@@ -4324,115 +4636,54 @@ const categorySeverity = (category) => (category === 'Major' ? 'info' : 'seconda
                                              subject's schedule, not one delivery mode's End Time. -->
                                         <div
                                             v-if="siblingPatternHoursFor(data) && data.end_time === computeAutoEndTime(data)"
-                                            class="min-w-[8rem] text-[11px] text-teal-600"
+                                            class="text-[11px] text-teal-600"
                                         >
                                             <i class="pi pi-copy"></i>
                                             Matches {{ recommendations[data.id]?.combined?.recommendations?.[0]?.pattern_source?.donor_section_code }}'s schedule.
                                         </div>
-                                        <div class="ml-auto flex items-center gap-1 self-end">
-                                            <Button
-                                                v-if="!isSplitRow(data)"
-                                                icon="pi pi-arrows-h"
-                                                label="Split Hours"
-                                                text
-                                                size="small"
-                                                class="!text-xs"
-                                                aria-label="Split into Face-to-Face and Online schedules"
-                                                title="Split this subject's hours between Face-to-Face and Online schedules"
-                                                :disabled="isSectionFinalized"
-                                                @click="openSplitModal(data)"
-                                            />
-                                            <Button
-                                                v-else
-                                                icon="pi pi-arrows-h"
-                                                label="Undo Split"
-                                                text
-                                                size="small"
-                                                severity="warn"
-                                                class="!text-xs"
-                                                aria-label="Undo the Face-to-Face/Online split"
-                                                :disabled="isSectionFinalized"
-                                                @click="undoSplit(data)"
-                                            />
-                                            <Button
-                                                icon="pi pi-sparkles"
-                                                label="Recommend"
-                                                text
-                                                size="small"
-                                                class="!text-xs"
-                                                aria-label="Smart Schedule Recommendation"
-                                                :disabled="isSectionFinalized"
-                                                @click="openRecommendDrawer(data)"
-                                            />
-                                            <Button
-                                                icon="pi pi-trash"
-                                                text
-                                                rounded
-                                                severity="danger"
-                                                size="small"
-                                                aria-label="Remove"
-                                                :disabled="isSectionFinalized"
-                                                :title="isSectionFinalized ? 'This section is finalized and locked.' : null"
-                                                @click="onRemove(data)"
-                                            />
                                         </div>
-                                    </div>
 
-                                    <!-- Line 1 (compact) — the second half of a split subject.
-                                         Skips the repeated EDP/Subject/Category/Units/Source
-                                         metadata (already shown on the first half directly
-                                         above) and keeps just the Delivery tag, Status, and the
-                                         per-row actions this half still needs of its own. -->
-                                    <div v-else class="flex flex-wrap items-center gap-x-2 gap-y-0.5 pl-2 border-l-2 border-slate-200">
-                                        <Tag
-                                            :value="data.delivery_mode === 'online' ? `🌐 Online (${data.split_hours}h)` : `🏫 Face-to-Face (${data.split_hours}h)`"
-                                            :severity="data.delivery_mode === 'online' ? 'info' : 'success'"
-                                            class="!text-[0.65rem]"
-                                        />
-                                        <Tag :value="displayStatus(data)" :severity="statusSeverity(displayStatus(data))" class="!text-[0.65rem]" />
-                                        <i
-                                            v-if="rowIsInConflict(data) || rowHasCapacityWarning(data.id) || rowHasRoomTypeWarning(data.id) || rowHasFacultyMismatchWarning(data.id)"
-                                            class="pi pi-exclamation-triangle"
-                                            :class="rowIsInConflict(data) ? 'text-red-500' : 'text-amber-500'"
-                                            :title="rowIsInConflict(data) ? (conflictTooltip(data.id) || 'Conflict — click the row to find the best schedule') : (conflictTooltip(data.id) || 'Unresolved scheduling conflict')"
-                                        ></i>
-                                        <span
-                                            v-if="rowIsInConflict(data)"
-                                            class="text-[0.65rem] text-red-500 underline decoration-dotted cursor-pointer"
-                                            @click.stop="openRecommendDrawer(data)"
-                                        >
-                                            Click to find best schedule
-                                        </span>
-                                        <div class="ml-auto flex items-center gap-1">
-                                            <Button
-                                                icon="pi pi-sparkles"
-                                                label="Recommend"
-                                                text
-                                                size="small"
-                                                class="!text-xs"
-                                                aria-label="Smart Schedule Recommendation"
-                                                :disabled="isSectionFinalized"
-                                                @click="openRecommendDrawer(data)"
+                                    <!-- Line 2: schedule tray — [Delivery] / Faculty / Room / Days / Start / End / Actions.
+                                         One CSS grid per delivery slot (see .ss-slot in <style>) so every
+                                         column lines up from row to row; a split subject gets two trays
+                                         (Online + Face-to-Face) inside the same subject card. -->
+                                    <div
+                                        class="ss-slot"
+                                        :class="isSplitRow(data) ? ['ss-slot--split', data.delivery_mode === 'online' ? 'ss-slot--online' : 'ss-slot--f2f'] : undefined"
+                                    >
+                                        <!-- SPLIT-DELIVERY SCHEDULING — labels which half of a split
+                                             subject this tray is (Online / Face-to-Face + hours). The
+                                             second half has no metadata strip of its own, so its Status,
+                                             conflict warning and "find best schedule" link live here too.
+                                             Ordinary 'combined' rows have no Delivery cell at all. -->
+                                        <div v-if="isSplitRow(data)" class="ss-f-delivery">
+                                            <Tag
+                                                :value="data.delivery_mode === 'online' ? `🌐 Online (${data.split_hours}h)` : `🏫 Face-to-Face (${data.split_hours}h)`"
+                                                :severity="data.delivery_mode === 'online' ? 'info' : 'success'"
+                                                class="!text-[0.65rem]"
                                             />
-                                            <Button
-                                                icon="pi pi-trash"
-                                                text
-                                                rounded
-                                                severity="danger"
-                                                size="small"
-                                                aria-label="Remove"
-                                                :disabled="isSectionFinalized"
-                                                :title="isSectionFinalized ? 'This section is finalized and locked.' : null"
-                                                @click="onRemove(data)"
-                                            />
+                                            <template v-if="isSplitContinuation(data)">
+                                                <div class="flex items-center gap-1 flex-wrap">
+                                                    <Tag :value="displayStatus(data)" :severity="statusSeverity(displayStatus(data))" class="!text-[0.65rem]" />
+                                                    <i
+                                                        v-if="rowIsInConflict(data) || rowHasCapacityWarning(data.id) || rowHasRoomTypeWarning(data.id) || rowHasFacultyMismatchWarning(data.id)"
+                                                        class="pi pi-exclamation-triangle"
+                                                        :class="rowIsInConflict(data) ? 'text-red-500' : 'text-amber-500'"
+                                                        :title="rowIsInConflict(data) ? (conflictTooltip(data.id) || 'Conflict — click the row to find the best schedule') : (conflictTooltip(data.id) || 'Unresolved scheduling conflict')"
+                                                    ></i>
+                                                </div>
+                                                <span
+                                                    v-if="rowIsInConflict(data)"
+                                                    class="text-[0.65rem] text-red-500 underline decoration-dotted cursor-pointer"
+                                                    @click.stop="openRecommendDrawer(data)"
+                                                >
+                                                    Click to find best schedule
+                                                </span>
+                                            </template>
                                         </div>
-                                    </div>
 
-                                    <!-- Line 2: Faculty / Room / Days / Start Time / End Time -->
-                                    <div class="flex flex-wrap items-start gap-2 pt-1.5 border-t border-slate-100">
                                         <!-- Faculty -->
-                                        <div class="flex-1 min-w-[13rem]">
-                                            <p class="text-[0.65rem] uppercase tracking-wide text-slate-400 mb-0.5">Faculty</p>
+                                        <div class="ss-f-faculty">
                                             <div class="flex items-start gap-1" @mouseenter="fetchRecommendations(data)">
                                                 <Select
                                                     v-model="data.faculty_id"
@@ -4444,7 +4695,7 @@ const categorySeverity = (category) => (category === 'Major' ? 'info' : 'seconda
                                                     optionDisabled="disabled"
                                                     filter
                                                     showClear
-                                                    placeholder="Select faculty"
+                                                    placeholder="Faculty"
                                                     class="w-full"
                                                     :disabled="isSectionFinalized"
                                                     :class="{ 'p-invalid': stateFor(data.id).errors.faculty_id || facultyConflictRowIds.has(data.id) || rowHasFacultyMismatchWarning(data.id), 'unscheduled-field': rowIsUnscheduled(data) }"
@@ -4461,7 +4712,20 @@ const categorySeverity = (category) => (category === 'Major' ? 'info' : 'seconda
                                                     <template #option="{ option }">
                                                         <div class="flex flex-col gap-0.5 py-0.5 w-full" :class="{ 'italic text-slate-400': option.disabled }">
                                                             <div class="flex items-center justify-between gap-2">
-                                                                <span class="text-xs">{{ option.label }}</span>
+                                                                <span class="flex items-center gap-1.5 min-w-0">
+                                                                    <span
+                                                                        v-if="option.slotStatus"
+                                                                        class="faculty-slot-dot shrink-0"
+                                                                        :class="option.slotStatus === 'busy' ? 'faculty-slot-dot--busy' : 'faculty-slot-dot--free'"
+                                                                        :title="option.slotStatus === 'busy' ? 'Already has a class at this day/time' : 'Free at this day/time'"
+                                                                    ></span>
+                                                                    <span class="text-xs">{{ option.label }}</span>
+                                                                    <span
+                                                                        v-if="option.slotStatus"
+                                                                        class="text-[0.6rem] font-medium"
+                                                                        :class="option.slotStatus === 'busy' ? 'text-red-500' : 'text-green-600'"
+                                                                    >{{ option.slotStatus === 'busy' ? 'Busy' : 'Free' }}</span>
+                                                                </span>
                                                                 <span v-if="!option.disabled" class="flex items-center gap-1 shrink-0">
                                                                     <Tag v-if="option.confidence" :value="option.confidence" :severity="confidenceSeverity(option.confidence)" class="!text-[0.6rem] !py-0.5" />
                                                                     <Tag v-else-if="option.bestMatch" value="Best Match" severity="success" class="!text-[0.6rem] !py-0.5" />
@@ -4501,15 +4765,15 @@ const categorySeverity = (category) => (category === 'Major' ? 'info' : 'seconda
                                         </div>
 
                                         <!-- Room -->
-                                        <div class="flex-1 min-w-[12rem]">
-                                            <p class="text-[0.65rem] uppercase tracking-wide text-slate-400 mb-0.5">Room</p>
+                                        <div class="ss-f-room">
                                             <!-- SPLIT-DELIVERY SCHEDULING — an 'online' delivery_mode
                                                  row never gets a Room and never should (see
                                                  SectionSubject::requiresRoom()); show a plain label
                                                  instead of the Room dropdown, same treatment
                                                  Practicum/OJT rows already get. -->
-                                            <div v-if="data.delivery_mode === 'online'" class="flex items-center gap-1 h-[2.5rem]">
-                                                <Tag value="🌐 Online — no room needed" severity="info" class="!text-[0.65rem]" />
+                                            <div v-if="data.delivery_mode === 'online'" class="ss-noroom">
+                                                <i class="pi pi-globe"></i>
+                                                <span>Online — no room needed</span>
                                             </div>
                                             <div v-else class="flex items-start gap-1" @mouseenter="fetchRecommendations(data)">
                                                 <Select
@@ -4522,7 +4786,7 @@ const categorySeverity = (category) => (category === 'Major' ? 'info' : 'seconda
                                                     optionDisabled="disabled"
                                                     filter
                                                     showClear
-                                                    placeholder="Select room"
+                                                    placeholder="Room"
                                                     class="w-full"
                                                     :disabled="isSectionFinalized"
                                                     :class="{ 'p-invalid': stateFor(data.id).errors.room_id || roomConflictRowIds.has(data.id), 'unscheduled-field': rowIsUnscheduled(data) }"
@@ -4570,16 +4834,14 @@ const categorySeverity = (category) => (category === 'Major' ? 'info' : 'seconda
                                         </div>
 
                                         <!-- Days -->
-                                        <div class="w-24 shrink-0">
-                                            <p class="text-[0.65rem] uppercase tracking-wide text-slate-400 mb-0.5">Days</p>
+                                        <div class="ss-f-days">
                                             <div class="flex items-start gap-1">
                                                 <MultiSelect
                                                     v-model="data.days"
                                                     :options="dayOptions"
                                                     optionLabel="label"
                                                     optionValue="value"
-                                                    placeholder="Select days"
-                                                    :selectionLimit="2"
+                                                    placeholder="Days"
                                                     class="w-full"
                                                     :disabled="isSectionFinalized"
                                                     :class="{ 'p-invalid': stateFor(data.id).errors.days || sectionConflictRowIds.has(data.id), 'unscheduled-field': rowIsUnscheduled(data) }"
@@ -4617,8 +4879,7 @@ const categorySeverity = (category) => (category === 'Major' ? 'info' : 'seconda
                                         </div>
 
                                         <!-- Start Time -->
-                                        <div class="w-36 shrink-0">
-                                            <p class="text-[0.65rem] uppercase tracking-wide text-slate-400 mb-0.5">Start Time</p>
+                                        <div class="ss-f-time">
                                             <Select
                                                 :modelValue="data.start_time"
                                                 :options="timeOptionsFor(data)"
@@ -4627,7 +4888,7 @@ const categorySeverity = (category) => (category === 'Major' ? 'info' : 'seconda
                                                 optionDisabled="disabled"
                                                 filter
                                                 showClear
-                                                placeholder="Start"
+                                                placeholder="Start Time"
                                                 class="w-full"
                                                 :disabled="isSectionFinalized"
                                                 :class="{ 'p-invalid': stateFor(data.id).errors.start_time, 'unscheduled-field': rowIsUnscheduled(data) }"
@@ -4645,8 +4906,7 @@ const categorySeverity = (category) => (category === 'Major' ? 'info' : 'seconda
                                         </div>
 
                                         <!-- End Time -->
-                                        <div class="w-36 shrink-0">
-                                            <p class="text-[0.65rem] uppercase tracking-wide text-slate-400 mb-0.5">End Time</p>
+                                        <div class="ss-f-time">
                                             <Select
                                                 :modelValue="data.end_time"
                                                 :options="endTimeOptionsFor(data)"
@@ -4655,7 +4915,7 @@ const categorySeverity = (category) => (category === 'Major' ? 'info' : 'seconda
                                                 optionDisabled="disabled"
                                                 filter
                                                 showClear
-                                                placeholder="End"
+                                                placeholder="End Time"
                                                 class="w-full"
                                                 :disabled="isSectionFinalized"
                                                 :class="{ 'p-invalid': stateFor(data.id).errors.end_time, 'unscheduled-field': rowIsUnscheduled(data) }"
@@ -4670,6 +4930,34 @@ const categorySeverity = (category) => (category === 'Major' ? 'info' : 'seconda
                                             <p v-if="stateFor(data.id).errors.end_time" class="text-red-500 text-xs mt-1">
                                                 <i class="pi pi-exclamation-triangle mr-1"></i>{{ stateFor(data.id).errors.end_time }}
                                             </p>
+                                        </div>
+
+                                        <!-- Availability Check — opens the popup that shows every Faculty's
+                                             and Room's timetable + workload for this term, so Faculty/Room/Day/
+                                             Time can be picked without leaving this page. -->
+                                        <div class="ss-f-actions">
+                                            <Button
+                                                icon="pi pi-calendar-clock"
+                                                outlined
+                                                size="small"
+                                                class="ss-btn ss-btn--check ss-btn--square"
+                                                aria-label="Check availability — faculty and room availability for this subject"
+                                                title="Check Availability — see Faculty and Room availability, workload, and pick a free combination"
+                                                :disabled="isSectionFinalized"
+                                                @click="openAvailability(data)"
+                                            />
+                                            <!-- Remove sits side by side with Check Availability on every row. -->
+                                            <Button
+                                                icon="pi pi-trash"
+                                                outlined
+                                                size="small"
+                                                severity="danger"
+                                                class="ss-btn ss-btn--delete ss-btn--square"
+                                                aria-label="Remove"
+                                                :disabled="isSectionFinalized"
+                                                :title="isSectionFinalized ? 'This section is finalized and locked.' : (isSplitRow(data) ? 'Remove this half of the split subject' : 'Remove this subject from the section')"
+                                                @click="onRemove(data)"
+                                            />
                                         </div>
                                     </div>
 
@@ -5084,6 +5372,39 @@ const categorySeverity = (category) => (category === 'Major' ? 'info' : 'seconda
             </div>
         </Drawer>
 
+        <!-- Faculty / Rooms side panel (see openAvailabilityBrowse()). Non-modal + draggable. -->
+        <AvailabilityPanel
+            v-model:visible="availabilityPanelOpen"
+            v-model:view="availabilityPanelView"
+            :section-id="section.id"
+            :section-code="section.section_code"
+            :section-rows="rows"
+            :scheduling-window="schedulingWindow"
+            :section-college-id="sectionCollegeId"
+            :section-college-name="sectionCollegeName"
+            :is-dark="isDark"
+        />
+
+        <!-- Availability Check popup (see openAvailability()). Mounted once; reads the
+             row being edited live so unsaved edits on this Section still block slots. -->
+        <AvailabilityModal
+            v-model:visible="availabilityOpen"
+            :section-id="section.id"
+            :section-code="section.section_code"
+            :subject-category="availabilityRow?.subject?.category ?? null"
+            :wants-laboratory="Number(availabilityRow?.subject?.laboratory_hours ?? 0) > 0"
+            :section-college-id="sectionCollegeId"
+            :section-college-name="sectionCollegeName"
+            :section-department-id="section.major?.department?.id ?? section.major?.department_id ?? null"
+            :initial-view="availabilityView"
+            :row="availabilityRow"
+            :section-rows="rows"
+            :scheduling-window="schedulingWindow"
+            :weekly-hours="availabilityRow ? (siblingPatternHoursFor(availabilityRow) ?? weeklyContactHours(availabilityRow)) : null"
+            :is-dark="isDark"
+            @apply="onAvailabilityApply"
+        />
+
         <!-- Auto Generate — days to keep free (optional) -->
         <Dialog
             v-model:visible="autoDaysModalVisible"
@@ -5153,6 +5474,139 @@ const categorySeverity = (category) => (category === 'Major' ? 'info' : 'seconda
                     :disabled="autoExcludesEveryDay"
                     @click="confirmAutoGenerate"
                 />
+            </template>
+        </Dialog>
+
+        <!-- Subject picker — opened by the toolbar's Split Hours / Recommend buttons -->
+        <Dialog
+            v-model:visible="subjectPickerVisible"
+            modal
+            dismissableMask
+            :draggable="false"
+            :header="subjectPickerMode === 'split' ? 'Split Hours — choose subjects' : 'Recommend — choose a subject'"
+            :style="{ width: subjectPickerMode === 'split' ? '40rem' : '34rem' }"
+            :breakpoints="{ '640px': '95vw' }"
+        >
+            <div class="relative mb-3">
+                <i class="pi pi-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm"></i>
+                <InputText v-model="subjectPickerSearch" placeholder="Search by code or title" class="w-full !pl-9" autofocus />
+            </div>
+            <div class="flex items-center justify-between gap-2 mb-2">
+                <p class="text-xs text-slate-500">
+                    <template v-if="subjectPickerMode === 'split'">Tick every subject to split, set its Online hours, then split them all at once. Only Lecture hours can go Online — Laboratory hours stay Face-to-Face (with a Room).</template>
+                    <template v-else>Pick a subject to see the best Faculty, Room and Time. Not-yet-scheduled subjects are listed first.</template>
+                </p>
+                <label
+                    v-if="subjectPickerMode === 'split' && splittableEntries.length"
+                    class="flex items-center gap-1.5 text-xs font-medium text-slate-600 cursor-pointer whitespace-nowrap"
+                >
+                    <input type="checkbox" class="h-4 w-4 accent-blue-600" :checked="allSplittableSelected" @change="toggleAllSplittable" />
+                    Select all
+                </label>
+            </div>
+            <ul class="max-h-[24rem] overflow-y-auto divide-y divide-slate-100 border border-slate-100 rounded-lg">
+                <li v-if="!subjectPickerEntries.length" class="px-3 py-6 text-center text-sm text-slate-400">No matching subjects.</li>
+
+                <!-- SPLIT mode -->
+                <template v-if="subjectPickerMode === 'split'">
+                    <li v-for="entry in subjectPickerEntries" :key="entry.key" class="px-3 py-2.5" :class="{ 'bg-blue-50/60': entry.state.selected }">
+                        <div class="flex items-center gap-3">
+                            <input
+                                v-if="entry.canSplit"
+                                v-model="entry.state.selected"
+                                type="checkbox"
+                                class="h-4 w-4 shrink-0 accent-blue-600"
+                                :aria-label="`Select ${entry.code} to split`"
+                            />
+                            <span v-else class="h-4 w-4 shrink-0"></span>
+
+                            <div class="min-w-0 flex-1">
+                                <div class="flex items-center gap-2 flex-wrap">
+                                    <span class="font-semibold text-sm">{{ entry.code }}</span>
+                                    <Tag v-if="entry.isSplit" value="Split" severity="info" class="!text-[0.6rem]" />
+                                </div>
+                                <p class="text-xs text-slate-500 truncate">
+                                    {{ entry.title }} · {{ entry.hours }} hr{{ entry.hours === 1 ? '' : 's' }}
+                                    <span class="text-slate-400">(Lec {{ entry.lecture }} · Lab {{ entry.lab }})</span>
+                                </p>
+                                <p v-if="!entry.isSplit && !entry.canSplit" class="text-[0.7rem] text-slate-400">No Lecture hours — nothing can go Online.</p>
+                            </div>
+
+                            <!-- Already split: show the saved breakdown + Undo -->
+                            <template v-if="entry.isSplit">
+                                <div class="flex flex-col items-end gap-1 text-[0.7rem] font-medium shrink-0">
+                                    <span class="text-sky-700">🌐 Online {{ entry.currentOnline }}h</span>
+                                    <span class="text-emerald-700">🏫 Face-to-Face {{ entry.currentF2f }}h · Room</span>
+                                </div>
+                                <button
+                                    type="button"
+                                    class="inline-flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 bg-orange-500 hover:bg-orange-600 focus-visible:ring-orange-400 !px-3 !py-1.5 shrink-0"
+                                    @click="onSubjectPickerAction(entry)"
+                                >
+                                    <i class="pi pi-replay text-xs"></i>Undo Split
+                                </button>
+                            </template>
+                        </div>
+
+                        <!-- Selected: set hours; Face-to-Face is calculated -->
+                        <div v-if="entry.canSplit && entry.state.selected" class="mt-2 ml-7 flex flex-wrap items-center gap-x-4 gap-y-1.5">
+                            <label class="flex items-center gap-2 text-xs text-sky-700 font-medium">
+                                🌐 Online
+                                <InputText
+                                    v-model.number="entry.state.online"
+                                    type="number"
+                                    min="1"
+                                    :max="entry.lecture"
+                                    class="!w-16 !py-1 text-center"
+                                    :class="{ 'p-invalid': entry.invalid }"
+                                />
+                                h <span class="text-slate-400 font-normal">(max {{ entry.lecture }}, no room)</span>
+                            </label>
+                            <span class="text-xs text-emerald-700 font-medium">
+                                🏫 Face-to-Face {{ entry.f2f }}h <span class="text-slate-400 font-normal">(with room)</span>
+                            </span>
+                            <span v-if="entry.invalid" class="text-xs text-red-500"><i class="pi pi-exclamation-triangle mr-1"></i>Online must be 1–{{ entry.lecture }} hr(s).</span>
+                        </div>
+                        <p v-if="entry.state.error" class="mt-1.5 ml-7 text-xs text-red-500"><i class="pi pi-exclamation-circle mr-1"></i>{{ entry.state.error }}</p>
+                    </li>
+                </template>
+
+                <!-- RECOMMEND mode -->
+                <template v-else>
+                    <li v-for="entry in subjectPickerEntries" :key="entry.key" class="flex items-center gap-3 px-3 py-2">
+                        <div class="min-w-0 flex-1">
+                            <div class="flex items-center gap-2 flex-wrap">
+                                <span class="font-semibold text-sm">{{ entry.code }}</span>
+                                <Tag v-if="entry.tag" :value="entry.tag" :severity="entry.tag === 'Online' ? 'info' : 'success'" class="!text-[0.6rem]" />
+                                <Tag v-if="entry.status" :value="entry.status" :severity="statusSeverity(entry.status)" class="!text-[0.6rem]" />
+                            </div>
+                            <p class="text-xs text-slate-500 truncate">
+                                {{ entry.title }}<template v-if="entry.hours"> · {{ entry.hours }} hr{{ entry.hours === 1 ? '' : 's' }}</template>
+                            </p>
+                        </div>
+                        <button
+                            type="button"
+                            class="inline-flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 bg-violet-600 hover:bg-violet-700 focus-visible:ring-violet-400 !px-3 !py-1.5 shrink-0"
+                            @click="onSubjectPickerAction(entry)"
+                        >
+                            <i class="pi pi-sparkles text-xs"></i>Recommend
+                        </button>
+                    </li>
+                </template>
+            </ul>
+
+            <template v-if="subjectPickerMode === 'split'" #footer>
+                <span class="mr-auto text-xs text-slate-500">{{ selectedBulkEntries.length }} selected</span>
+                <Button label="Close" text :disabled="bulkSplitSaving" @click="subjectPickerVisible = false" />
+                <button
+                    type="button"
+                    class="inline-flex items-center justify-center gap-1.5 rounded-lg px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 bg-blue-600 hover:bg-blue-700 focus-visible:ring-blue-400"
+                    :disabled="!canSubmitBulkSplit || bulkSplitSaving"
+                    @click="submitBulkSplit"
+                >
+                    <i class="pi" :class="bulkSplitSaving ? 'pi-spin pi-spinner' : 'pi-arrows-h'"></i>
+                    {{ selectedBulkEntries.length ? `Split ${selectedBulkEntries.length} subject${selectedBulkEntries.length === 1 ? '' : 's'}` : 'Split selected' }}
+                </button>
             </template>
         </Dialog>
 
@@ -5748,10 +6202,132 @@ const categorySeverity = (category) => (category === 'Major' ? 'info' : 'seconda
     padding-top: 0 !important;
     border-top: none !important;
 }
-.schedule-table :deep(tr.split-pair-second .flex-col) {
+.schedule-table :deep(tr.split-pair-second .ss-card) {
     padding-top: 0 !important;
-    margin-top: -0.75rem;
 }
+
+/* SHARED HEADER + ALIGNED COLUMNS — on wide screens (>= 1400px) the one
+   header row (Column #header) and every row's first seven cells use the
+   same fixed widths so they line up; the per-row labels (.ss-label) are
+   hidden because the header replaces them. Below 1400px the header is
+   hidden and each row keeps its own small labels, exactly as before. */
+.ss-head { display: none; }
+.ss-card { border-left: 3px solid transparent; } /* same 3px as .unscheduled-row, so columns never shift */
+@media (min-width: 1400px) {
+    .ss-head {
+        display: flex;
+        width: 100%;      /* PrimeVue wraps header content in a shrink-to-fit flex box; */
+        min-width: 0;     /* force the header to span the whole band like the rows do */
+        align-items: center;
+        column-gap: 1rem;
+        padding-left: 3px;
+        font-size: 0.85rem;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        white-space: nowrap;
+        color: #1E3A8A; /* blue-900 — strong contrast on the light header */
+    }
+    .ss-label { display: none; }
+    .ss-c-edp    { flex: 0 0 7rem;   min-width: 0 !important; max-width: none !important; }
+    .ss-c-code   { flex: 0 0 9.5rem; min-width: 0 !important; max-width: none !important; }
+    /* Title is the flexible column: it absorbs all spare width, which pushes
+       Category/Units/Status/Source to the right side of the row. */
+    .ss-c-title  { flex: 1 1 16rem;  min-width: 0 !important; max-width: none !important; }
+    .ss-c-cat    { flex: 0 0 10rem;  min-width: 0 !important; max-width: none !important; }
+    .ss-c-units  { flex: 0 0 3.5rem; min-width: 0 !important; max-width: none !important; }
+    .ss-c-status { flex: 0 0 9rem;   min-width: 0 !important; max-width: none !important; }
+    .ss-c-source { flex: 0 0 10rem;  min-width: 0 !important; max-width: none !important; }
+    .ss-actions  { align-self: center; }
+}
+@media (max-width: 1399.98px) {
+    .schedule-table :deep(.p-datatable-thead) { display: none; }
+}
+
+/* SUBJECT CARD — each subject is a metadata strip (EDP … Source, lined up
+   with the shared header) above one or two "schedule trays". A tray is one
+   CSS grid, so Faculty / Room / Days / Start / End / actions line up from
+   row to row. Split subjects get two trays, tinted by delivery mode. */
+.ss-card { gap: 0.6rem !important; padding-top: 0.45rem !important; padding-bottom: 0.45rem !important; }
+.ss-notes {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 1rem;
+    margin-top: -0.2rem;
+}
+.ss-slot {
+    display: flex; flex-wrap: wrap; align-items: flex-start; gap: 0.5rem;
+    padding: 0.5rem 0.6rem;
+    border: 1px solid rgba(100, 116, 139, 0.2);
+    border-left-width: 3px;
+    border-radius: 0.6rem;
+    background: rgba(255, 255, 255, 0.7);
+}
+.ss-slot--online { border-left-color: #38BDF8; } /* sky-400 */
+.ss-slot--f2f    { border-left-color: #34D399; } /* emerald-400 */
+.ss-f-delivery { display: flex; flex-direction: column; align-items: flex-start; gap: 0.3rem; flex: 0 0 100%; }
+.ss-f-faculty  { flex: 1 1 13rem; min-width: 0; }
+.ss-f-room     { flex: 1 1 12rem; min-width: 0; }
+.ss-f-days     { flex: 0 0 7.5rem; min-width: 0; }
+.ss-f-time     { flex: 0 0 8.5rem; min-width: 0; }
+.ss-f-actions  { flex: 0 0 auto; display: flex; flex-wrap: nowrap; align-items: center; justify-content: flex-end; gap: 0.4rem; }
+.ss-noroom {
+    display: flex; align-items: center; gap: 0.45rem;
+    height: 2.5rem; padding: 0 0.75rem;
+    border: 1px dashed rgba(100, 116, 139, 0.45);
+    border-radius: 0.5rem;
+    font-size: 0.75rem; color: #64748B; white-space: nowrap;
+    background: rgba(148, 163, 184, 0.08);
+}
+.ss-noroom .pi { color: #0284C7; font-size: 0.8rem; }
+@media (min-width: 1400px) {
+    .ss-slot {
+        display: grid;
+        grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) 7.5rem 8.5rem 8.5rem 5.4rem;
+        column-gap: 0.6rem;
+    }
+    .ss-slot--split {
+        grid-template-columns: 11rem minmax(0, 1.25fr) minmax(0, 1fr) 7.5rem 8.5rem 8.5rem 5.4rem;
+    }
+    .ss-f-delivery, .ss-f-faculty, .ss-f-room, .ss-f-days, .ss-f-time, .ss-f-actions { flex: none; }
+}
+.dark-scope :deep(.ss-slot) {
+    background: rgba(255, 255, 255, 0.04);
+    border-color: rgba(255, 255, 255, 0.12);
+}
+.dark-scope :deep(.ss-slot--online) { border-left-color: #38BDF8; }
+.dark-scope :deep(.ss-slot--f2f)    { border-left-color: #34D399; }
+.dark-scope :deep(tr.row-light-bg .ss-slot) {
+    background: rgba(255, 255, 255, 0.6);
+    border-color: rgba(15, 23, 42, 0.14);
+}
+.dark-scope :deep(.ss-noroom) { color: #94A3B8; border-color: rgba(255, 255, 255, 0.25); }
+.dark-scope :deep(tr.row-light-bg .ss-noroom) { color: #475569; border-color: rgba(15, 23, 42, 0.3); }
+
+/* STICKY HEADER — keep the EDP Code ... Source header visible while the
+   page scrolls (it pins just under the 4rem fixed top bar). For sticky to
+   work against the PAGE scroll, nothing between the header and the page may
+   be a scroll container, so: the table clips with overflow: clip (same
+   rounded-corner clipping, no scroll container) and PrimeVue's own inner
+   scroll wrapper is made visible. (AppLayout's root uses overflow-clip for
+   the same reason.) The header cells need an opaque background so rows
+   don't show through underneath. */
+.schedule-table { overflow: clip !important; }
+.schedule-table :deep(.p-datatable-table-container) { overflow: visible !important; }
+.schedule-table :deep(.p-datatable-thead) { position: static !important; }
+.schedule-table :deep(.p-datatable-column-header-content) { width: 100%; }
+.schedule-table :deep(.p-datatable-thead > tr > th) {
+    position: sticky !important;
+    top: 4rem;
+    z-index: 5;
+    background: #E0E7FF !important; /* indigo-100 */
+    padding-top: 0.7rem;
+    padding-bottom: 0.7rem;
+    box-shadow: 0 2px 0 #818CF8; /* indigo-400 underline */
+}
+.dark-scope :deep(.p-datatable-thead > tr > th) {
+    background: #1E2A4A !important;
+    box-shadow: 0 2px 0 #818CF8;
+}
+.dark-scope :deep(.ss-head) { color: #E0E7FF; }
 
 /* Conflicted rows (red) are click-to-resolve — opens the Smart
    Schedule Recommendation drawer for that row (see openRecommendDrawer). */
@@ -6076,4 +6652,104 @@ const categorySeverity = (category) => (category === 'Major' ? 'info' : 'seconda
 .dark-scope .auto-day-chip__tag { background: rgba(255, 255, 255, 0.1); color: #CBD5E1; }
 .dark-scope .auto-day-chip--free { border-color: #34D399; background: rgba(16, 185, 129, 0.16); color: #6EE7B7; }
 .dark-scope .auto-day-chip--free .auto-day-chip__tag { background: #10B981; color: #FFFFFF; }
+/* DARK MODE — table header (EDP Code ... Source). Earlier dark rules left
+   it translucent/white with pale text, so it was unreadable and rows
+   showed through the sticky header. Solid dark band + light text, with
+   higher specificity than the older .dark-scope th rules. */
+.dark-scope .schedule-table :deep(.p-datatable-thead > tr > th) {
+    background: #1E2A4A !important;
+    background-image: none !important;
+    color: #E0E7FF !important;
+    border-color: rgba(129, 140, 248, 0.35) !important;
+    box-shadow: 0 2px 0 #818CF8 !important;
+}
+.dark-scope .schedule-table :deep(.ss-head),
+.dark-scope .schedule-table :deep(.ss-head > div),
+.dark-scope .schedule-table :deep(.p-datatable-column-title) {
+    color: #E0E7FF !important;
+}
+</style>
+
+<style>
+/* Faculty free/busy indicator (overlay is teleported, so this is unscoped) */
+.faculty-slot-dot { width: 0.6rem; height: 0.6rem; border-radius: 9999px; flex-shrink: 0; }
+.faculty-slot-dot--free { background: #22c55e; animation: faculty-blink-green 1.2s ease-in-out infinite; }
+.faculty-slot-dot--busy { background: #ef4444; animation: faculty-blink-red 1.2s ease-in-out infinite; }
+@keyframes faculty-blink-green {
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.6); }
+    50% { opacity: 0.35; box-shadow: 0 0 0 5px rgba(34, 197, 94, 0); }
+}
+@keyframes faculty-blink-red {
+    0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.6); }
+    50% { opacity: 0.35; box-shadow: 0 0 0 5px rgba(239, 68, 68, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .faculty-slot-dot--free, .faculty-slot-dot--busy { animation: none; }
+}
+
+/* Row action buttons — Split / Undo Split / Recommend / Delete / Check
+   Availability. PrimeVue's `text` buttons are borderless and nearly
+   invisible against the row's tinted background, so each one gets a soft
+   filled pill with a border and its own colour, filling solid on hover.
+   Unscoped: PrimeVue Button roots are children of this page's template. */
+.p-button.ss-btn { border-width: 1px; border-style: solid; font-weight: 600; transition: background-color .15s, color .15s, border-color .15s, box-shadow .15s, transform .15s; }
+.p-button.ss-btn:not(:disabled):hover { transform: translateY(-1px); box-shadow: 0 3px 8px rgba(15, 23, 42, 0.15); }
+.p-button.ss-btn:not(:disabled):active { transform: translateY(0); box-shadow: none; }
+.p-button.ss-btn:disabled { opacity: .45; }
+.p-button.ss-btn:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+
+.p-button.ss-btn--split { background: #eff6ff !important; border-color: #93c5fd !important; color: #1d4ed8 !important; }
+.p-button.ss-btn--split:not(:disabled):hover { background: #2563eb !important; border-color: #2563eb !important; color: #fff !important; }
+
+.p-button.ss-btn--undo { background: #fffbeb !important; border-color: #fcd34d !important; color: #b45309 !important; }
+.p-button.ss-btn--undo:not(:disabled):hover { background: #d97706 !important; border-color: #d97706 !important; color: #fff !important; }
+
+.p-button.ss-btn--recommend { background: #f5f3ff !important; border-color: #c4b5fd !important; color: #6d28d9 !important; }
+.p-button.ss-btn--recommend:not(:disabled):hover { background: #7c3aed !important; border-color: #7c3aed !important; color: #fff !important; }
+
+.p-button.ss-btn--delete { background: #fef2f2 !important; border-color: #fca5a5 !important; color: #dc2626 !important; }
+.p-button.ss-btn--delete:not(:disabled):hover { background: #dc2626 !important; border-color: #dc2626 !important; color: #fff !important; }
+
+.p-button.ss-btn.ss-btn--square { width: 2.5rem; height: 2.5rem; padding: 0; flex: 0 0 auto; border-radius: 0.5rem; }
+.p-button.ss-btn--check { background: #ecfdf5 !important; border-color: #34d399 !important; color: #047857 !important; }
+.p-button.ss-btn--check:not(:disabled):hover { background: #059669 !important; border-color: #059669 !important; color: #fff !important; }
+
+html.dark .p-button.ss-btn--split { background: rgba(59, 130, 246, .16) !important; border-color: rgba(96, 165, 250, .55) !important; color: #93c5fd !important; }
+html.dark .p-button.ss-btn--undo { background: rgba(245, 158, 11, .16) !important; border-color: rgba(251, 191, 36, .55) !important; color: #fcd34d !important; }
+html.dark .p-button.ss-btn--recommend { background: rgba(139, 92, 246, .18) !important; border-color: rgba(167, 139, 250, .55) !important; color: #c4b5fd !important; }
+html.dark .p-button.ss-btn--delete { background: rgba(239, 68, 68, .16) !important; border-color: rgba(248, 113, 113, .55) !important; color: #fca5a5 !important; }
+html.dark .p-button.ss-btn--check { background: rgba(16, 185, 129, .16) !important; border-color: rgba(52, 211, 153, .55) !important; color: #6ee7b7 !important; }
+html.dark .p-button.ss-btn--split:not(:disabled):hover { background: #2563eb !important; color: #fff !important; }
+html.dark .p-button.ss-btn--undo:not(:disabled):hover { background: #d97706 !important; color: #fff !important; }
+html.dark .p-button.ss-btn--recommend:not(:disabled):hover { background: #7c3aed !important; color: #fff !important; }
+html.dark .p-button.ss-btn--delete:not(:disabled):hover { background: #dc2626 !important; color: #fff !important; }
+html.dark .p-button.ss-btn--check:not(:disabled):hover { background: #059669 !important; color: #fff !important; }
+
+/* Faculty / Rooms panel buttons (tab row) — each gets its own colour instead of
+   the neutral secondary-outlined look (which washed out to white on hover).
+   Tinted at rest, solid when hovered or when its panel is open. The
+   "!bg-transparent" class on the buttons opts them out of the global
+   gradient/outlined button skins in app.css. */
+.p-button.ss-nav-btn { border-width: 1px; border-style: solid; font-weight: 600; transition: background-color .15s, color .15s, border-color .15s, box-shadow .15s, transform .15s; }
+.p-button.ss-nav-btn--faculty { background: #eef2ff !important; border-color: #a5b4fc !important; color: #4338ca !important; }
+.p-button.ss-nav-btn--faculty:not(:disabled):hover,
+.p-button.ss-nav-btn--faculty.is-active { background: #4f46e5 !important; border-color: #4f46e5 !important; color: #fff !important; box-shadow: 0 3px 8px rgba(79, 70, 229, 0.35) !important; }
+.p-button.ss-nav-btn--rooms { background: #fffbeb !important; border-color: #fcd34d !important; color: #b45309 !important; }
+.p-button.ss-nav-btn--rooms:not(:disabled):hover,
+.p-button.ss-nav-btn--rooms.is-active { background: #d97706 !important; border-color: #d97706 !important; color: #fff !important; box-shadow: 0 3px 8px rgba(217, 119, 6, 0.35) !important; }
+html.dark .p-button.ss-nav-btn--faculty { background: rgba(99, 102, 241, .18) !important; border-color: rgba(129, 140, 248, .55) !important; color: #c7d2fe !important; }
+html.dark .p-button.ss-nav-btn--rooms { background: rgba(245, 158, 11, .16) !important; border-color: rgba(251, 191, 36, .55) !important; color: #fcd34d !important; }
+html.dark .p-button.ss-nav-btn--faculty:not(:disabled):hover,
+html.dark .p-button.ss-nav-btn--faculty.is-active { background: #4f46e5 !important; color: #fff !important; }
+html.dark .p-button.ss-nav-btn--rooms:not(:disabled):hover,
+html.dark .p-button.ss-nav-btn--rooms.is-active { background: #d97706 !important; color: #fff !important; }
+
+/* The global outlined-button hover in app.css ("colour-tinted fill + glow
+   ring", background: color-mix(currentColor 13%)) out-ranks the hover rules
+   above for the outlined tray buttons. Because these rules also force the
+   text to white, currentColor became white, so the hovered button turned
+   white-on-white and the icon vanished. Matching that selector's shape with
+   extra classes wins, so the solid hover fill applies again. */
+.p-button.p-button.p-button-outlined.ss-btn.ss-btn--check:not(:disabled):not([class*="report-btn"]):not([class*="!bg-"]):hover { background: #059669 !important; border-color: #059669 !important; color: #fff !important; box-shadow: 0 3px 8px rgba(5, 150, 105, 0.35) !important; }
+.p-button.p-button.p-button-outlined.ss-btn.ss-btn--delete:not(:disabled):not([class*="report-btn"]):not([class*="!bg-"]):hover { background: #dc2626 !important; border-color: #dc2626 !important; color: #fff !important; box-shadow: 0 3px 8px rgba(220, 38, 38, 0.35) !important; }
 </style>

@@ -26,6 +26,15 @@ const schoolBranding = computed(() => page.props.schoolBranding ?? { name: null,
 const authRoles = computed(() => page.props.auth?.roles ?? []);
 const isAdministrator = computed(() => authRoles.value.includes('Administrator'));
 
+// FACULTY LOGIN — a login whose ONLY role is Faculty sees just "My Schedule"
+// (no sidebar sections, term switcher, bell or chat). Mirrors the server-side
+// App\Http\Middleware\RestrictFacultyRole, which is what actually enforces it.
+const isFaculty = computed(
+    () =>
+        authRoles.value.includes('Faculty') &&
+        !['Administrator', 'Registrar', 'Assistant Dean', 'Dean', 'OIC'].some((role) => authRoles.value.includes(role)),
+);
+
 // Coarse module abilities shared by HandleInertiaRequests — UI
 // convenience only. The backend independently re-checks every one of
 // these on every request (Policies + Gate::define), so this list is
@@ -42,8 +51,6 @@ const can = computed(() => page.props.auth?.can ?? {});
 // mobile. The desktop choice is remembered between visits.
 const MOBILE_BREAKPOINT = 768;
 const SIDEBAR_PREF_KEY = 'classly.sidebar.minimized';
-const isMobile = ref(false);
-const sidebarOpen = ref(true);
 
 const readMinimizedPref = () => {
     try {
@@ -52,6 +59,17 @@ const readMinimizedPref = () => {
         return false;
     }
 };
+
+// PERFORMANCE / UX — every page wraps its own <AppLayout>, so this
+// layout is re-created on EVERY sidebar click. It used to start as
+// "expanded" and only fix itself in onMounted, which meant a minimized
+// sidebar re-expanded and then animated (300ms) back to the icon rail
+// on every navigation — it looked like the sidebar was slow/glitchy.
+// The first render now already uses the right state, so there is
+// nothing to animate when a page loads.
+const initialMobile = typeof window !== 'undefined' && window.innerWidth < MOBILE_BREAKPOINT;
+const isMobile = ref(initialMobile);
+const sidebarOpen = ref(initialMobile ? false : !readMinimizedPref());
 const writeMinimizedPref = (minimized) => {
     try {
         window.localStorage.setItem(SIDEBAR_PREF_KEY, minimized ? '1' : '0');
@@ -185,8 +203,20 @@ const isActive = (routeName) => {
 // Every navigation group in display order. One list drives both the
 // expanded sidebar (with section headings) and the minimized rail (with
 // dividers), so the two can never drift apart.
-const navSections = computed(() => [
-    { key: 'main', title: null, items: menuItems },
+const facultyNavSections = [
+    { key: 'main', title: null, items: [{ label: 'My Schedule', route: 'my-schedule', icon: 'pi pi-calendar' }] },
+];
+
+// An OIC / Registrar / Dean who is ALSO a faculty member (their login is linked
+// to a Faculty record) gets a "My Schedule" link under Dashboard.
+const hasFacultyRecord = computed(() => !!page.props.auth?.hasFacultyRecord);
+const mainItems = computed(() => [
+    ...menuItems,
+    ...(hasFacultyRecord.value ? [{ label: 'My Schedule', route: 'my-schedule', icon: 'pi pi-calendar' }] : []),
+]);
+
+const navSections = computed(() => isFaculty.value ? facultyNavSections : [
+    { key: 'main', title: null, items: mainItems.value },
     ...(isAdministrator.value ? [{ key: 'users', title: 'User Management', items: userManagementItems }] : []),
     ...(academicSetupItems.value.length ? [{ key: 'academic', title: 'Academic Setup', items: academicSetupItems.value }] : []),
     { key: 'resources', title: 'Resource Management', items: resourceManagementItems },
@@ -197,13 +227,16 @@ const navSections = computed(() => [
 </script>
 
 <template>
-    <div class="relative min-h-screen overflow-hidden transition-colors duration-300" :class="isDark ? 'bg-[#0B1020]' : 'bg-[#F2F2F2]'">
+    <div class="relative min-h-screen overflow-clip transition-colors duration-300" :class="isDark ? 'bg-[#0B1020]' : 'bg-[#F2F2F2]'">
         <!-- Translucent gradient wash behind every page. Fixed, so it stays put while content scrolls. -->
         <div class="app-gradient-bg" :class="isDark ? 'app-gradient-bg--dark' : 'app-gradient-bg--light'" aria-hidden="true"></div>
         <!-- Top Navigation Bar -->
         <header class="neu-navy-surface h-16 w-full flex items-center justify-between px-3 sm:px-6 fixed top-0 left-0 right-0 z-40 border-b border-black/10">
             <div class="flex items-center gap-2 sm:gap-4 min-w-0">
+                <!-- Faculty logins have no sidebar, so the logo is just a mark. -->
+                <img v-if="isFaculty" src="/logo.png" alt="CLASSLY" class="h-7 w-7" />
                 <button
+                    v-else
                     type="button"
                     class="flex h-9 w-9 items-center justify-center rounded-lg transition hover:bg-white/10 active:scale-95"
                     :title="sidebarOpen ? 'Minimize sidebar' : 'Expand sidebar'"
@@ -231,18 +264,39 @@ const navSections = computed(() => [
             </div>
 
             <div class="flex items-center gap-2.5 sm:gap-5 shrink-0">
-                <TermSwitcher />
-                <span class="neu-navy-raised flex h-9 w-9 shrink-0 items-center justify-center rounded-lg">
+                <TermSwitcher v-if="!isFaculty" />
+                <span v-if="!isFaculty" class="neu-navy-raised flex h-9 w-9 shrink-0 items-center justify-center rounded-lg">
                     <NotificationBell v-if="user" />
                 </span>
                 <ThemeToggle />
+
+                <!-- Faculty: profile + logout live in the top bar (no sidebar) -->
+                <div v-if="isFaculty && user" class="flex items-center gap-2 border-l border-white/15 pl-2.5 sm:pl-4">
+                    <span v-if="user.profile_photo_url" class="h-8 w-8 shrink-0 overflow-hidden rounded-full ring-2 ring-emerald-400/60">
+                        <img :src="user.profile_photo_url" alt="Profile photo" class="h-full w-full object-cover" />
+                    </span>
+                    <span v-else class="neu-navy-raised flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold text-white">
+                        {{ user.name?.charAt(0)?.toUpperCase() }}
+                    </span>
+                    <span class="hidden max-w-[160px] truncate text-xs font-semibold text-white md:block">{{ user.name }}</span>
+                    <Link
+                        :href="route('logout')"
+                        method="post"
+                        as="button"
+                        aria-label="Logout"
+                        title="Logout"
+                        class="flex h-9 w-9 items-center justify-center rounded-lg text-slate-300 transition hover:bg-red-500/15 hover:text-red-400"
+                    >
+                        <i class="pi pi-sign-out text-[14px]"></i>
+                    </Link>
+                </div>
             </div>
         </header>
 
         <!-- Backdrop — only rendered as an overlay drawer on mobile; tapping
              it closes the sidebar instead of navigating "through" it. -->
         <div
-            v-if="isMobile && sidebarOpen"
+            v-if="!isFaculty && isMobile && sidebarOpen"
             class="fixed inset-0 top-16 z-10 bg-black/50"
             @click="sidebarOpen = false"
         ></div>
@@ -254,6 +308,7 @@ const navSections = computed(() => [
              hover). Minimized/expanded with the CLASSLY logo in the header.
              Never hidden on desktop; on mobile it is a drawer. -->
         <aside
+            v-if="!isFaculty"
             class="neu-navy-surface fixed top-16 left-0 bottom-0 flex flex-col overflow-hidden text-slate-200 transition-[width] duration-300 ease-in-out"
             :class="[
                 isMobile ? (sidebarOpen ? 'w-[230px]' : 'w-0') : (sidebarOpen ? 'w-[230px]' : 'w-[72px]'),
@@ -303,7 +358,7 @@ const navSections = computed(() => [
             <div class="shrink-0 space-y-1 border-t border-white/10 px-3 pb-3 pt-3">
                 <template v-if="user">
                     <Link
-                        :href="`${route('settings')}?tab=account`"
+                        :href="isFaculty ? route('my-schedule') : `${route('settings')}?tab=account`"
                         :aria-label="`${user.name} — account settings`"
                         class="group flex h-[52px] w-full items-center overflow-hidden rounded-xl transition-colors duration-150 hover:bg-emerald-500/15"
                         @mouseenter="showRailTip($event, user.name)"
@@ -355,7 +410,7 @@ const navSections = computed(() => [
              the sidebar is an overlay drawer, so padding stays 0. -->
         <main
             class="relative z-0 pt-16 transition-[padding] duration-300 ease-in-out"
-            :class="isMobile ? 'pl-0' : (sidebarOpen ? 'pl-[230px]' : 'pl-[72px]')"
+            :class="isFaculty || isMobile ? 'pl-0' : (sidebarOpen ? 'pl-[230px]' : 'pl-[72px]')"
         >
             <div class="p-4 sm:p-6 lg:p-8" :class="isDark ? 'text-slate-100' : ''">
                 <slot :is-dark="isDark" />
@@ -364,7 +419,7 @@ const navSections = computed(() => [
     
         <!-- IN-SYSTEM MESSAGING — layout-level so the chatbox survives
              page navigation instead of remounting per page. -->
-        <ChatWidget v-if="user" />
+        <ChatWidget v-if="user && !isFaculty" />
 </div>
 </template>
 

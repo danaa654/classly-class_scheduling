@@ -3,6 +3,7 @@
 namespace App\Http\Requests;
 
 use App\Models\FacultyLoadRequest;
+use App\Services\FacultyAccountService;
 use App\Services\FacultyWorkloadService;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
@@ -60,7 +61,46 @@ class UpdateFacultyRequest extends FormRequest
             'email' => ['nullable', 'email', 'max:255'],
             'contact_number' => ['nullable', 'string', 'max:20'],
             'remarks' => ['nullable', 'string'],
+
+            // SYSTEM ROLES — Administrator only (the controller ignores these
+            // for anyone else). Lets one person be Faculty AND Registrar /
+            // Dean / OIC / Assistant Dean from the faculty record itself.
+            'system_roles' => ['sometimes', 'array'],
+            'system_roles.*' => ['string', Rule::in(FacultyAccountService::ASSIGNABLE_ROLES)],
+            'role_college_id' => [
+                Rule::requiredIf(fn () => $this->wantsCollegeRole()),
+                'nullable',
+                'exists:colleges,id',
+            ],
+            'role_oversees_all_departments' => ['sometimes', 'boolean'],
+            'role_department_ids' => [
+                Rule::requiredIf(fn () => $this->isAdministrator()
+                    && in_array('OIC', $this->systemRoles(), true)
+                    && ! $this->boolean('role_oversees_all_departments')),
+                'array',
+            ],
+            'role_department_ids.*' => [
+                'integer',
+                Rule::exists('departments', 'id')->where('college_id', $this->input('role_college_id')),
+            ],
         ];
+    }
+
+    private function isAdministrator(): bool
+    {
+        return (bool) $this->user()?->hasRole('Administrator');
+    }
+
+    /** @return list<string> */
+    private function systemRoles(): array
+    {
+        return array_values(array_filter((array) $this->input('system_roles', []), 'is_string'));
+    }
+
+    private function wantsCollegeRole(): bool
+    {
+        return $this->isAdministrator()
+            && array_intersect(FacultyAccountService::COLLEGE_ROLES, $this->systemRoles()) !== [];
     }
 
     /**
@@ -73,6 +113,15 @@ class UpdateFacultyRequest extends FormRequest
      */
     public function withValidator($validator): void
     {
+        // A College is led by a Dean OR an OIC, not both on one person.
+        $validator->after(function ($validator) {
+            $roles = $this->systemRoles();
+
+            if ($this->isAdministrator() && in_array('Dean', $roles, true) && in_array('OIC', $roles, true)) {
+                $validator->errors()->add('system_roles', 'Choose either Dean or OIC, not both.');
+            }
+        });
+
         $validator->after(function ($validator) {
             $faculty = $this->route('faculty');
 

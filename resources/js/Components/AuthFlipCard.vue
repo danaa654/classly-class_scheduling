@@ -148,7 +148,7 @@ const schoolBranding = computed(() => page.props.schoolBranding ?? { name: null,
                     <div
                         class="auth-card-face-inner rounded-3xl p-8 transition-colors duration-300"
                     >
-                        <div class="mb-6 flex flex-col items-center text-center">
+                        <div class="auth-card-head mb-6 flex flex-col items-center text-center">
                             <span
                                 class="neu-inset neu-glow mb-4 flex h-24 w-24 items-center justify-center rounded-full"
                                 :style="{ '--neu-glow-color': isDark ? 'rgba(56, 189, 248, 0.35)' : 'rgba(37, 99, 235, 0.3)' }"
@@ -176,7 +176,7 @@ const schoolBranding = computed(() => page.props.schoolBranding ?? { name: null,
                             {{ loginStatus }}
                         </Message>
 
-                        <form class="mt-6 flex flex-col gap-5" @submit.prevent="submitLogin">
+                        <form class="auth-card-form mt-6 flex flex-col gap-5" @submit.prevent="submitLogin">
                             <Message
                                 v-if="loginEmailError"
                                 severity="error"
@@ -252,7 +252,7 @@ const schoolBranding = computed(() => page.props.schoolBranding ?? { name: null,
                     <div
                         class="auth-card-face-inner rounded-3xl p-8 transition-colors duration-300"
                     >
-                        <div class="mb-6 flex flex-col items-center text-center">
+                        <div class="auth-card-head mb-6 flex flex-col items-center text-center">
                             <span
                                 class="neu-inset neu-glow mb-4 flex h-24 w-24 items-center justify-center rounded-full"
                                 :style="{ '--neu-glow-color': isDark ? 'rgba(56, 189, 248, 0.35)' : 'rgba(37, 99, 235, 0.3)' }"
@@ -280,7 +280,7 @@ const schoolBranding = computed(() => page.props.schoolBranding ?? { name: null,
                             {{ forgotStatus }}
                         </Message>
 
-                        <form class="mt-6 flex flex-col gap-5" @submit.prevent="submitForgot">
+                        <form class="auth-card-form mt-6 flex flex-col gap-5" @submit.prevent="submitForgot">
                             <div class="flex flex-col gap-2">
                                 <label for="forgot-email" class="text-sm font-medium" :class="isDark ? 'text-slate-200' : 'text-slate-700'">Email</label>
                                 <InputText
@@ -323,10 +323,42 @@ const schoolBranding = computed(() => page.props.schoolBranding ?? { name: null,
         <!-- School branding footer (Settings → General) — separate from CLASSLY's own branding above -->
         <p
             v-if="schoolBranding.name"
-            class="mt-6 text-center text-xs"
+            class="mt-3 text-center text-xs"
             :class="isDark ? 'text-slate-500' : 'text-slate-400'"
         >
             &copy; 2026 {{ schoolBranding.name }} — by Classly @ DJS
         </p>
     </div>
 </template>
+
+<style scoped>
+/* Compact mode: on short viewports (small laptops, landscape phones) tighten
+   the card so the login page fits without scrolling. */
+@media (max-height: 860px) {
+    .auth-card-face-inner {
+        padding: 1.25rem 1.5rem 2.25rem;
+    }
+    .auth-card-head {
+        margin-bottom: 0.75rem;
+    }
+    .auth-card-head > span {
+        height: 4.25rem;
+        width: 4.25rem;
+        margin-bottom: 0.5rem;
+    }
+    .auth-card-head > span > img {
+        height: 2.5rem;
+        width: 2.5rem;
+    }
+    .auth-card-form {
+        margin-top: 1rem;
+        gap: 0.75rem;
+    }
+}
+
+@media (max-height: 700px) {
+    .auth-card-head > span {
+        display: none;
+    }
+}
+</style>

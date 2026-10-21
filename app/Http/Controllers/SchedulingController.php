@@ -52,13 +52,24 @@ class SchedulingController extends Controller
         // "First Semester"/"Second Semester"; the Semester model spells
         // it "1st Semester"/"2nd Semester" — see that method's docblock).
         $sectionsQuery = $activeTerm ? $activeTerm->matchingSectionsQuery() : Section::query();
-        $sectionsQuery->visibleTo(auth()->user());
+        $user = auth()->user();
+
+        // Section + subject scope for THIS user (see
+        // Section::scopeSchedulingScopeFor() / SectionSubject::
+        // scopeVisibleTo()): a Dean who is also flagged as GenEd/Minor
+        // Assistant Dean sees their own College's subjects PLUS
+        // GenEd/Minor everywhere — never other Colleges' Major
+        // subjects. Every number below is built from this one scope so
+        // the cards, alerts, charts and activity can't disagree.
+        $sectionsQuery->schedulingScopeFor($user);
 
         $sectionIds = (clone $sectionsQuery)->pluck('id');
 
         $totalSections = $sectionIds->count();
 
-        $sectionSubjectsQuery = SectionSubject::query()->whereIn('section_id', $sectionIds);
+        $sectionSubjectsQuery = SectionSubject::query()
+            ->whereIn('section_id', $sectionIds)
+            ->visibleTo($user);
 
         $totalSubjects = (clone $sectionSubjectsQuery)->count();
         $scheduledSubjects = (clone $sectionSubjectsQuery)->where('status', 'Scheduled')->count();
@@ -118,6 +129,7 @@ class SchedulingController extends Controller
         // service always resolves the real Active term and doesn't
         // apply per-user Section visibility.
         $facultyPlacements = SectionSubject::query()
+            ->visibleTo($user)
             ->whereIn('section_subjects.section_id', $sectionIds)
             ->whereNotNull('section_subjects.faculty_id')
             ->whereIn('section_subjects.status', ['Scheduled', 'Draft'])
@@ -160,35 +172,86 @@ class SchedulingController extends Controller
             fn ($f) => $f->max_teaching_units && $f->assigned_units > $f->max_teaching_units
         )->count();
 
-        $topFaculty = $facultyLoads->take(8)->map(fn ($f) => [
-            'id' => $f->id,
-            'name' => trim("{$f->first_name} {$f->last_name}"),
-            'units' => (int) $f->assigned_units,
-            'max' => (int) $f->max_teaching_units,
-            'unit_label' => $f->unit_label,
-        ])->values();
+        // Faculty Utilization — EVERY faculty member, ranked. This used to be
+        // "top 8 by assigned units", built only from faculty who already had
+        // a placement, so anyone with nothing scheduled yet never appeared.
+        // Now it starts from the roster itself (Active faculty this user may
+        // see, per Faculty::scopeVisibleTo()) and left-joins the loads
+        // computed above, defaulting to 0. Faculty who DO carry a load in
+        // this viewed term are always included even if the roster scope
+        // wouldn't normally show them (e.g. a GenEd faculty teaching a Dean's
+        // GenEd subject, or a faculty member since marked Inactive), so no
+        // existing row can disappear from the widget.
+        $assignedLoads = $facultyLoads->keyBy('id');
+
+        $rosterIds = Faculty::query()
+            ->visibleTo($user)
+            ->where('status', 'Active')
+            ->pluck('id')
+            ->merge($assignedLoads->keys())
+            ->unique()
+            ->values();
+
+        $facultyUtilization = Faculty::query()
+            ->whereIn('id', $rosterIds)
+            // user_id + the linked login's photo, so a faculty member who
+            // uploaded a profile photo (My Schedule) shows it here too.
+            ->with('user:id,profile_photo_path')
+            ->get(['id', 'user_id', 'first_name', 'last_name', 'max_teaching_units', 'max_weekly_hours', 'workload_type'])
+            ->map(function (Faculty $faculty) use ($assignedLoads) {
+                $usesHours = $faculty->workload_type === 'hours';
+                $max = $usesHours
+                    ? (int) ($faculty->max_weekly_hours ?? 0)
+                    : (int) ($faculty->max_teaching_units ?? 0);
+                $units = (int) ($assignedLoads->get($faculty->id)?->assigned_units ?? 0);
+
+                return [
+                    'id' => $faculty->id,
+                    'name' => trim("{$faculty->first_name} {$faculty->last_name}"),
+                    'photo_url' => $faculty->user?->profile_photo_url,
+                    'units' => $units,
+                    'max' => $max,
+                    'percent' => $max > 0 ? (int) round(($units / $max) * 100) : 0,
+                    'unit_label' => $usesHours ? 'Hours' : 'Units',
+                ];
+            })
+            // Rank: highest utilization first, then most units, then name —
+            // so faculty with nothing assigned sit at the bottom, A to Z.
+            ->sortBy([['percent', 'desc'], ['units', 'desc'], ['name', 'asc']])
+            ->values();
 
         // Room conflicts: same room, overlapping day tokens, overlapping time.
-        $roomConflictCount = $this->countRoomConflicts($sectionIds);
+        $roomConflictCount = $this->countRoomConflicts($sectionIds, $user);
 
         // Room utilization — delegated entirely to RoomUtilizationService
         // (see its class docblock: "the single source of truth for Room
-        // Utilization"), the same service the Rooms page itself calls.
-        // Scoped to Rooms actually touched by a placement in this
-        // Dashboard's viewed term, ranked by utilization_percent, top 8 —
-        // this alone is what changed; the underlying % for any given
-        // Room is now guaranteed identical to what the Rooms page shows.
+        // Utilization"), the same service the Rooms page itself calls, so
+        // the % for any Room is identical to what the Rooms page shows.
+        // This lists EVERY Active Room this user may schedule into (unused
+        // ones at 0%), ranked by utilization — previously only Rooms with
+        // a placement in this term appeared, capped at the top 8. Rooms
+        // that DO have placements in this term are always included, even if
+        // they're outside the user's usual room scope or since deactivated.
         $roomsUsedIds = (clone $sectionSubjectsQuery)->whereNotNull('room_id')->distinct()->pluck('room_id');
-        $roomsUsed = Room::query()->whereIn('id', $roomsUsedIds)->get()->keyBy('id');
-        $roomSummaries = $this->roomUtilization->summarizeRooms($roomsUsed);
 
-        $topRooms = collect($roomSummaries)
-            ->sortByDesc('utilization_percent')
-            ->take(8)
+        $roomIds = Room::query()
+            ->usableBy($user)
+            ->where('status', 'Active')
+            ->pluck('id')
+            ->merge($roomsUsedIds)
+            ->unique()
+            ->values();
+
+        $rooms = Room::query()->whereIn('id', $roomIds)->get()->keyBy('id');
+        $roomSummaries = $this->roomUtilization->summarizeRooms($rooms);
+
+        $roomUtilization = collect($roomSummaries)
             ->map(fn ($summary) => [
-                'name' => $roomsUsed->get($summary['room_id'])?->room_name ?? '—',
+                'id' => $summary['room_id'],
+                'name' => $rooms->get($summary['room_id'])?->room_name ?? '—',
                 'occupancy' => (int) round($summary['utilization_percent']),
             ])
+            ->sortBy([['occupancy', 'desc'], ['name', 'asc']])
             ->values();
 
         // Progress per college, via Section -> Major -> Department -> College.
@@ -196,14 +259,14 @@ class SchedulingController extends Controller
             ->where('status', 'Active')
             ->orderBy('name')
             ->get(['id', 'name', 'short_name'])
-            ->map(function ($college) use ($sectionIds) {
+            ->map(function ($college) use ($sectionIds, $user) {
                 $ids = Section::query()
                     ->whereIn('id', $sectionIds)
                     ->whereHas('major.department', fn ($q) => $q->where('college_id', $college->id))
                     ->pluck('id');
 
-                $total = SectionSubject::query()->whereIn('section_id', $ids)->count();
-                $scheduled = SectionSubject::query()->whereIn('section_id', $ids)->where('status', 'Scheduled')->count();
+                $total = SectionSubject::query()->whereIn('section_id', $ids)->visibleTo($user)->count();
+                $scheduled = SectionSubject::query()->whereIn('section_id', $ids)->visibleTo($user)->where('status', 'Scheduled')->count();
 
                 return [
                     'id' => $college->id,
@@ -224,6 +287,7 @@ class SchedulingController extends Controller
         // both sources.
         $placementActivity = SectionSubject::query()
             ->whereIn('section_id', $sectionIds)
+            ->visibleTo($user)
             ->with(['section:id,section_code', 'subject:id,subject_title'])
             ->orderByDesc('updated_at')
             ->take(8)
@@ -300,8 +364,8 @@ class SchedulingController extends Controller
                 'conflict_subjects' => $conflictSubjects,
             ],
             'collegeProgress' => $collegeProgress,
-            'topFaculty' => $topFaculty,
-            'topRooms' => $topRooms,
+            'facultyUtilization' => $facultyUtilization,
+            'roomUtilization' => $roomUtilization,
             'recentActivity' => $recentActivity,
         ]);
     }
@@ -314,9 +378,10 @@ class SchedulingController extends Controller
      *
      * @param  \Illuminate\Support\Collection<int, int>  $sectionIds
      */
-    private function countRoomConflicts($sectionIds): int
+    private function countRoomConflicts($sectionIds, $user = null): int
     {
         $placements = SectionSubject::query()
+            ->visibleTo($user)
             ->whereIn('section_id', $sectionIds)
             ->whereNotNull('room_id')
             ->whereNotNull('days')

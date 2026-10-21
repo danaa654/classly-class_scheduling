@@ -29,7 +29,7 @@ class FacultyLoadRequest extends Model
      * caps used when a College is short-staffed. Keep in sync with
      * UpdateFacultyRequest/StoreFacultyRequest.
      */
-    public const HARD_CAP_UNITS = 45;
+    public const HARD_CAP_UNITS = 50;
 
     /**
      * The actual ceiling a given user may request/approve up to right
@@ -43,7 +43,7 @@ class FacultyLoadRequest extends Model
      * change a faculty load ceiling directly — Admin, Registrar, Dean,
      * OIC and Assistant Dean (FacultyPolicy::changeMaxLoad()) — gets the
      * full HARD_CAP_UNITS ceiling, so e.g. a Dean can take a faculty
-     * member from 24 up to 45 units without needing an Administrator;
+     * member from 24 up to 50 units without needing an Administrator;
      * when it's off, all of them are held to the configured max.
      * (This used to be Admin/Registrar only, which left Dean/OIC/
      * Assistant Dean stuck at the configured max even though the policy

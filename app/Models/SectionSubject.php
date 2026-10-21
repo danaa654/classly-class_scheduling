@@ -154,6 +154,80 @@ class SectionSubject extends Model
     }
 
     /**
+     * SCOPE FILTER — placements that fall inside a given "scope".
+     * Single source of truth for "which section_subjects rows count
+     * toward this person's scheduling numbers", shared by the
+     * Scheduling Dashboard and the main Dashboard so they can never
+     * disagree.
+     *
+     * A row is in scope when EITHER:
+     *   - $sharedCategories is true AND the Subject is General
+     *     Education or Minor (institution-wide, any College's
+     *     Section), OR
+     *   - $collegeId is given AND the row's Section belongs to that
+     *     College (Section -> Major -> Department -> College), i.e.
+     *     that College's own Major subjects (and anything else
+     *     scheduled inside its Sections).
+     *
+     * Fails closed: with neither argument set, nothing matches.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder<SectionSubject>  $query
+     * @return \Illuminate\Database\Eloquent\Builder<SectionSubject>
+     */
+    public function scopeInScope($query, bool $sharedCategories, ?int $collegeId)
+    {
+        return $query->where(function ($scope) use ($sharedCategories, $collegeId) {
+            $scope->whereRaw('1 = 0');
+
+            if ($sharedCategories) {
+                $scope->orWhereHas('subject', function ($subjectQuery) {
+                    $subjectQuery->whereIn('category', ['General Education', 'Minor']);
+                });
+            }
+
+            if ($collegeId !== null) {
+                $scope->orWhereHas('section.major.department', function ($departmentQuery) use ($collegeId) {
+                    $departmentQuery->where('college_id', $collegeId);
+                });
+            }
+        });
+    }
+
+    /**
+     * RBAC query scope: the placements a user's scheduling numbers
+     * should be built from.
+     *
+     *   - Administrator / Registrar: everything.
+     *   - Dean / OIC: everything inside their own College's Sections.
+     *   - Assistant Dean (role): GenEd/Minor subjects only, in any
+     *     College's Sections.
+     *   - Dean / OIC flagged is_gened_assistant_dean: BOTH — their own
+     *     College's subjects PLUS GenEd/Minor everywhere. They do NOT
+     *     get other Colleges' Major subjects.
+     *   - Anyone else: nothing.
+     *
+     * Mirrors AccessScope::canManageByCategory() so what the numbers
+     * count matches what the user is actually allowed to manage.
+     *
+     * @param  \Illuminate\Database\Eloquent\Builder<SectionSubject>  $query
+     * @return \Illuminate\Database\Eloquent\Builder<SectionSubject>
+     */
+    public function scopeVisibleTo($query, ?\App\Models\User $user)
+    {
+        if (\App\Support\AccessScope::isUnrestricted($user)) {
+            return $query;
+        }
+
+        // A Dean/OIC with no College assigned gets -1 (matches no
+        // College) rather than falling back to "everything".
+        $collegeId = \App\Support\AccessScope::isCollegeScoped($user)
+            ? (\App\Support\AccessScope::collegeId($user) ?? -1)
+            : null;
+
+        return $query->inScope(\App\Support\AccessScope::isAssistantDean($user), $collegeId);
+    }
+
+    /**
      * The Faculty assigned to teach this subject for this section.
      * Null until assigned by the scheduling engine.
      *
@@ -268,8 +342,15 @@ class SectionSubject extends Model
             return null;
         }
 
-        $this->loadMissing(['subject.major.department', 'faculty.subjects', 'faculty.college']);
-
+        // PERFORMANCE (N+1) — this accessor runs for EVERY serialized
+        // row (it is in $appends). It used to call
+        // `$this->loadMissing([...])`, which only ever sees THIS one
+        // model, so a list of N rows fired up to 4 relation queries per
+        // row. Plain property access is used instead: relations the
+        // caller already eager-loaded cost nothing, and any relation
+        // that is NOT loaded is lazy-loaded once for the whole
+        // collection by Eloquent's automatic eager loading (enabled in
+        // AppServiceProvider::boot()) instead of once per row.
         $subject = $this->subject;
         $faculty = $this->faculty;
 
@@ -286,6 +367,8 @@ class SectionSubject extends Model
         // Mirrors RecommendationService's GenEd pool: "no College" OR a
         // College that has opted in via counts_as_gened (e.g. College
         // of Teacher Education supplying most GenEd/Minor faculty).
+        // `faculty.college` is only touched when it is actually needed
+        // (a GenEd/Minor subject taught by a faculty that HAS a College).
         $isHomeMatch = $subjectCollegeId === null
             ? ($faculty->college_id === null || (bool) $faculty->college?->counts_as_gened)
             : $faculty->college_id === $subjectCollegeId;

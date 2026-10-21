@@ -125,9 +125,18 @@ class RoomController extends Controller
                 'high_usage' => $summary['utilization_status'] === 'High Usage',
                 'conflicts' => $summary['has_conflict'],
                 'inactive' => $room->status !== 'Active',
+                // Summary-card filters: "Active Rooms" hides inactive rooms; the
+                // "Avg. Utilization" card lists the active rooms (the same set the
+                // average is computed from), sorted below.
+                'active', 'utilization' => $room->status === 'Active',
                 default => true,
             };
         })->values();
+
+        // Avg. Utilization card — busiest rooms first.
+        if ($quickFilter === 'utilization') {
+            $filtered = $filtered->sortByDesc(fn (Room $room) => $summaries[$room->id]['utilization_percent'])->values();
+        }
 
         $page = max(1, (int) $request->query('room_page', 1));
         $perPage = 10;
@@ -176,6 +185,80 @@ class RoomController extends Controller
                 ->orderBy('name')
                 ->get(['id', 'name']),
         ]);
+    }
+
+    /**
+     * Room Grid — every Active Room the user may see, with its weekly
+     * bookings, so the Rooms page can lay them out Floor x Day in one
+     * glance (panelist request: see all rooms from the 1st to the top
+     * floor without opening each room's schedule).
+     *
+     * Scoped exactly like index() (applyScope()), read-only, and always
+     * the Active Academic Term — the same term the Rooms table's
+     * Utilization column uses. Filtering by building/type/day/time is
+     * done in the browser so switching a filter never needs a request.
+     */
+    public function grid(Request $request): JsonResponse
+    {
+        $this->authorize('viewAny', Room::class);
+
+        $query = Room::query()
+            ->with('college:id,name,short_name')
+            ->where('status', 'Active')
+            ->orderBy('building')
+            ->orderBy('room_code');
+
+        $this->applyScope($query, $request);
+
+        $rooms = $query->get(['id', 'room_code', 'room_name', 'building', 'floor', 'room_type', 'capacity', 'college_id']);
+        $blocks = $this->utilization->weeklyBlocksForRooms($rooms);
+
+        $schoolYear = \App\Models\SchoolYear::active();
+
+        return response()->json([
+            'days' => $schoolYear ? $schoolYear->allowedDays() : \App\Models\SchoolYear::DEFAULT_CLASS_DAYS,
+            'window' => [
+                'start' => $schoolYear?->classStartTime() ?? \App\Models\SchoolYear::DEFAULT_CLASS_START_TIME,
+                'end' => $schoolYear?->classEndTime() ?? \App\Models\SchoolYear::DEFAULT_CLASS_END_TIME,
+            ],
+            'rooms' => $rooms->map(fn (Room $room) => [
+                'id' => $room->id,
+                'code' => $room->room_code,
+                'name' => $room->room_name,
+                'building' => $room->building,
+                'floor' => $room->floor,
+                'floor_order' => $this->floorOrder($room->floor),
+                'type' => $room->room_type,
+                'capacity' => $room->capacity,
+                'college_name' => $room->college?->short_name ?? $room->college?->name,
+                'blocks' => $blocks[$room->id] ?? [],
+            ])->values(),
+        ]);
+    }
+
+    /**
+     * Sort key for a free-text floor label ("1st Floor", "Ground Floor",
+     * "Basement") so the grid can stack them like the building itself.
+     * Anything unrecognised sorts last rather than breaking the grid.
+     */
+    private function floorOrder(?string $floor): int
+    {
+        $label = strtolower(trim((string) $floor));
+
+        if ($label === '') {
+            return 999;
+        }
+        if (preg_match('/(\d+)/', $label, $match)) {
+            return (int) $match[1];
+        }
+        if (str_contains($label, 'ground')) {
+            return 0;
+        }
+        if (str_contains($label, 'basement') || str_contains($label, 'lower')) {
+            return -1;
+        }
+
+        return 998;
     }
 
     /**
@@ -776,13 +859,13 @@ class RoomController extends Controller
     private function applyScope($query, Request $request): void
     {
         $user = Auth::user();
-        $role = $user?->getRoleNames()->first();
 
-        if (! $user || in_array($role, self::UNSCOPED_ROLES, true)) {
+        // Multi-role safe: check every role the user holds, not just the first.
+        if (! $user || $user->hasAnyRole(self::UNSCOPED_ROLES)) {
             return;
         }
 
-        if (in_array($role, ['Dean', 'OIC'], true) && $user->college_id) {
+        if ($user->hasAnyRole(['Dean', 'OIC']) && $user->college_id) {
             $query->where(function ($q) use ($user) {
                 $q->whereNull('college_id')->orWhere('college_id', $user->college_id);
             });

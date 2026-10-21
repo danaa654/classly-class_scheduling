@@ -44,7 +44,7 @@ class SubjectController extends Controller
         // sections) — the Add/Edit/Delete actions are what's scoped,
         // enforced per-record below and in the frontend via `canManage`.
         $subjects = Subject::query()
-            ->with(['college:id,code,name', 'majors:id,name,code,department_id'])
+            ->with(['college:id,code,name,color', 'majors:id,name,code,department_id'])
             ->when($search !== '', function ($query) use ($search) {
                 $query->where(function ($inner) use ($search) {
                     $inner->where('subject_code', 'like', "%{$search}%")

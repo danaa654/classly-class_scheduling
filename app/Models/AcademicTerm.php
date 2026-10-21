@@ -135,13 +135,27 @@ class AcademicTerm extends Model
      */
     public function missingOfferings(): array
     {
-        return Major::query()
+        $majors = Major::query()
             ->where('status', 'Active')
             ->whereHas('department', fn ($query) => $query->where('status', 'Active')
                 ->whereHas('college', fn ($college) => $college->where('status', 'Active')))
             ->with('department.college')
-            ->get()
-            ->reject(fn (Major $major) => $this->matchingSectionsQuery()->where('major_id', $major->id)->exists())
+            ->get();
+
+        // PERFORMANCE (N+1) — this used to run one `exists` query PER
+        // MAJOR (and the Academic Calendar list calls it for every term
+        // on the page). One query now returns every Major that already
+        // has a Section under this term; the rest are "missing".
+        $majorIdsWithSections = $majors->isEmpty()
+            ? collect()
+            : $this->matchingSectionsQuery()
+                ->whereIn('major_id', $majors->pluck('id'))
+                ->distinct()
+                ->pluck('major_id')
+                ->flip();
+
+        return $majors
+            ->reject(fn (Major $major) => $majorIdsWithSections->has($major->id))
             ->map(fn (Major $major) => [
                 'college' => $major->college()?->name,
                 'major' => $major->name,

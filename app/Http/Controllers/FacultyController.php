@@ -4,13 +4,17 @@ namespace App\Http\Controllers;
 
 use App\Http\Requests\ImportFacultyRequest;
 use App\Http\Requests\StoreFacultyRequest;
+use App\Http\Requests\UpdateFacultyAvailabilityRequest;
 use App\Http\Requests\UpdateFacultyRequest;
 use App\Models\College;
+use App\Models\Department;
 use App\Models\Faculty;
 use App\Models\FacultyLoadRequest;
+use App\Models\FacultyAvailability;
 use App\Models\Subject;
 use App\Models\User;
 use App\Services\ActivityLogService;
+use App\Services\FacultyAccountService;
 use App\Services\FacultyScheduleEmailService;
 use App\Services\FacultyWorkloadService;
 use App\Services\NotificationService;
@@ -19,6 +23,7 @@ use App\Support\ViewingTerm;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
@@ -37,6 +42,7 @@ class FacultyController extends Controller
         private readonly NotificationService $notifications,
         private readonly ActivityLogService $activityLog,
         private readonly FacultyScheduleEmailService $facultyScheduleEmail,
+        private readonly FacultyAccountService $accounts,
     ) {
     }
 
@@ -125,7 +131,13 @@ class FacultyController extends Controller
 
         $faculties = Faculty::query()
             ->visibleTo($request->user(), $viewAllColleges)
-            ->with(['college' => fn ($query) => $query->withTrashed()])
+            ->with([
+                'college' => fn ($query) => $query->withTrashed(),
+                // Only what stateFor() reads to label the Account column.
+                'user:id,status,invited_at,invite_accepted_at,invite_error',
+                // Role badges (Registrar / OIC / ...) next to the name.
+                'user.roles:id,name',
+            ])
             ->when($search !== '', function ($query) use ($search) {
                 $query->where(function ($inner) use ($search) {
                     $inner->where('faculty_id', 'like', "%{$search}%")
@@ -172,6 +184,17 @@ class FacultyController extends Controller
             $faculty->setAttribute('canEdit', $request->user()->can('update', $faculty));
             $faculty->setAttribute('canDelete', $request->user()->can('delete', $faculty));
 
+            // LOGIN ACCOUNT column (FacultyAccountService): No account /
+            // Invite queued / Invite sent / Send failed / Active /
+            // Deactivated, plus whether THIS viewer may create or re-send
+            // it for THIS row (Dean/OIC: own College only, etc.). The
+            // linked user is dropped from the payload afterwards so no
+            // login details ride along in the page props.
+            $faculty->setAttribute('account', $this->accounts->stateFor($faculty));
+            $faculty->setAttribute('canProvisionAccount', $request->user()->can('provisionAccount', $faculty));
+            $faculty->setAttribute('system_roles', $this->accounts->systemRolesOf($faculty->user));
+            $faculty->unsetRelation('user');
+
             return $faculty;
         });
 
@@ -210,6 +233,12 @@ class FacultyController extends Controller
             // faster way to do the same thing many rows at a time.
             'canImportFacultyDirectly' => $request->user()->can('create', Faculty::class),
             'hardCapUnits' => FacultyLoadRequest::effectiveCapFor($request->user()),
+            // Faculty LOGIN accounts — gates the "Generate Accounts"
+            // button, and feeds its "N pending" badge (rows in the
+            // viewer's own scope that have an email but no account yet)
+            // plus the "no email" count. See FacultyAccountService.
+            'canProvisionAccounts' => $request->user()->hasAnyRole(['Administrator', 'Registrar', 'Assistant Dean', 'Dean', 'OIC']),
+            'accountSummary' => $this->accounts->summaryFor($request->user()),
         ]);
     }
 
@@ -224,6 +253,9 @@ class FacultyController extends Controller
         $faculty->load([
             'college' => fn ($query) => $query->withTrashed(),
             'subjects' => fn ($query) => $query->orderBy('subject_code'),
+            'availabilities',
+            'user.roles:id,name',
+            'user.departments:id,name',
         ]);
 
         // Real assigned workload (Scheduled + Draft placements, active
@@ -235,8 +267,34 @@ class FacultyController extends Controller
 
         $user = $request->user();
 
+        // SYSTEM ROLES — what this person is besides Faculty (Registrar /
+        // OIC of CCS / ...). Everyone who can open the page sees the badges;
+        // only an Administrator gets the editor (canManage).
+        $linked = $faculty->user;
+        $systemRoles = [
+            'canManage' => AccessScope::isAdministrator($user),
+            'roles' => $this->accounts->systemRolesOf($linked),
+            'hasLogin' => (bool) $linked,
+            'collegeId' => $linked?->college_id,
+            'departmentIds' => $linked ? $linked->departments->pluck('id')->values() : [],
+            'isAdministratorLogin' => (bool) $linked?->hasRole('Administrator'),
+            // An existing login (e.g. his OIC account) that shares his email
+            // and will be linked instead of creating a second one.
+            'linkableLogin' => (bool) $this->accounts->linkableUserFor($faculty),
+            'assignable' => FacultyAccountService::ASSIGNABLE_ROLES,
+        ];
+        $faculty->unsetRelation('user');
+
         return Inertia::render('Scheduling/Faculty/Details', [
             'faculty' => $faculty,
+            'systemRoles' => $systemRoles,
+            'allDepartments' => AccessScope::isAdministrator($user)
+                ? Department::query()->orderBy('name')->get(['id', 'name', 'college_id'])
+                : [],
+            // Set teaching hours (empty = available any time), grouped
+            // back into editable "days + from/to" rows for the
+            // Availability tab.
+            'facultyAvailability' => $this->groupedAvailability($faculty),
             // Deactivation-impact preview (spec Section 7/8) — lets
             // the page show the "⚠ Scheduled Assignments" / "🔒
             // Finalized Schedule Assignment" indicators and pre-fill
@@ -309,6 +367,22 @@ class FacultyController extends Controller
                     'is_finalized' => $term ? $this->facultyScheduleEmail->isFinalized($faculty, $term) : false,
                 ];
             })(),
+            // Scheduling window (Class Start/End Time, Time Interval, Available
+            // Days) of the viewed term's School Year — the Workload tab's Grid
+            // view lays blocks out on it, same as Reports' Grid.
+            'schedulingWindow' => (function () use ($request) {
+                $term = ViewingTerm::resolve($request);
+                $yearName = $term?->schoolYear?->name;
+                $schoolYear = $yearName ? \App\Models\SchoolYear::query()->where('name', $yearName)->first() : null;
+                $schoolYear ??= \App\Models\SchoolYear::active();
+
+                return [
+                    'start_time' => $schoolYear?->classStartTime() ?? \App\Models\SchoolYear::DEFAULT_CLASS_START_TIME,
+                    'end_time' => $schoolYear?->classEndTime() ?? \App\Models\SchoolYear::DEFAULT_CLASS_END_TIME,
+                    'available_days' => $schoolYear?->allowedDays() ?? \App\Models\SchoolYear::DEFAULT_CLASS_DAYS,
+                    'interval_minutes' => $schoolYear?->intervalMinutes() ?? \App\Models\SchoolYear::DEFAULT_TIME_INTERVAL_MINUTES,
+                ];
+            })(),
         ]);
     }
 
@@ -366,6 +440,13 @@ class FacultyController extends Controller
 
         $data = $request->validated();
 
+        // System-role fields are not Faculty columns — split them off so
+        // they never reach fill(), and only an Administrator may use them.
+        $roleKeys = ['system_roles', 'role_college_id', 'role_oversees_all_departments', 'role_department_ids'];
+        $roleInput = Arr::only($data, $roleKeys);
+        $data = Arr::except($data, $roleKeys);
+        $applyRoles = AccessScope::isAdministrator($request->user()) && array_key_exists('system_roles', $roleInput);
+
         // Per spec Section 6/11: Dean/OIC/Assistant Dean may never
         // reassign a faculty member's College. Only Admin/Registrar
         // (already bypassed via Gate::before / isUnrestricted) may
@@ -421,7 +502,28 @@ class FacultyController extends Controller
             'new' => $faculty->{$field},
         ], $changedFields);
 
-        $faculty->save();
+        // Save + roles are one unit: a rejected role change (e.g. the person
+        // is an Administrator account) rolls the whole edit back.
+        $roleResult = null;
+
+        DB::transaction(function () use ($faculty, $applyRoles, $roleInput, &$roleResult) {
+            $faculty->save();
+
+            if ($applyRoles) {
+                $roleResult = $this->accounts->applySystemRoles(
+                    $faculty,
+                    $roleInput['system_roles'] ?? [],
+                    isset($roleInput['role_college_id']) ? (int) $roleInput['role_college_id'] : $faculty->college_id,
+                    array_map('intval', $roleInput['role_department_ids'] ?? []),
+                    (bool) ($roleInput['role_oversees_all_departments'] ?? false),
+                );
+            }
+        });
+
+        // A brand-new login still has to set its password.
+        if ($roleResult && $roleResult['created']) {
+            $this->accounts->queueInvite($roleResult['user'], $request->user());
+        }
 
         if (array_key_exists('max_teaching_units', $data) && $data['max_teaching_units'] !== $oldMaxTeachingUnits) {
             $this->notifications->facultyMaxLoadEditedDirectly(
@@ -452,7 +554,172 @@ class FacultyController extends Controller
             $request->user(),
         );
 
-        return redirect()->route('scheduling.faculty')->with('success', 'Faculty member updated successfully.');
+        $message = 'Faculty member updated successfully.';
+
+        if ($roleResult) {
+            $message = match (true) {
+                $roleResult['created'] => 'Faculty member updated. A login was created and an invitation is on its way.',
+                $roleResult['linked'] => 'Faculty member updated and linked to their existing login.',
+                default => 'Faculty member and system roles updated.',
+            };
+        }
+
+        return redirect()->route('scheduling.faculty')->with('success', $message);
+    }
+
+    /**
+     * AVAILABILITY TAB — save this Faculty member's set teaching hours.
+     * Same authorization as editing the faculty record (update policy),
+     * but a separate, lightweight endpoint so the Availability tab
+     * never has to resend the whole Edit Faculty form. An empty list
+     * clears the restriction (available any time).
+     */
+    public function updateAvailability(UpdateFacultyAvailabilityRequest $request, Faculty $faculty): RedirectResponse
+    {
+        $this->authorize('update', $faculty);
+
+        $windows = $this->clampToClassHours($request, $request->validated('availability') ?? []);
+
+        $warning = $this->syncAvailability($faculty, $windows);
+
+        $facultyName = trim(($faculty->first_name ?? '').' '.($faculty->last_name ?? ''));
+
+        $this->activityLog->record(
+            ActivityLogService::FACULTY_UPDATED,
+            "{$request->user()->full_name} updated the availability of faculty member {$facultyName}.",
+            $faculty,
+            $request->user(),
+        );
+
+        return back()->with('success', 'Availability updated.'.($warning ? ' '.$warning : ''));
+    }
+
+    /**
+     * Term Setup class hours always win over a Faculty member's own
+     * availability: pull every window's Start/End Time back inside the
+     * viewed term's School Year class hours (e.g. 8:00 PM -> 7:30 PM
+     * when classes end 7:30 PM, 7:00 AM -> 8:00 AM when they start 8:00
+     * AM). The Availability tab already does this client-side; this is
+     * the server-side safety net. A window that lies ENTIRELY outside
+     * class hours is rejected rather than silently dropped (dropping it
+     * could turn a restricted faculty member into "any time").
+     *
+     * @param  list<array{days: list<string>, start_time: string, end_time: string}>  $windows
+     * @return list<array{days: list<string>, start_time: string, end_time: string}>
+     *
+     * @throws \Illuminate\Validation\ValidationException
+     */
+    private function clampToClassHours(Request $request, array $windows): array
+    {
+        $term = ViewingTerm::resolve($request);
+        $yearName = $term?->schoolYear?->name;
+        $schoolYear = $yearName ? \App\Models\SchoolYear::query()->where('name', $yearName)->first() : null;
+        $schoolYear ??= \App\Models\SchoolYear::active();
+
+        $min = substr((string) ($schoolYear?->classStartTime() ?? \App\Models\SchoolYear::DEFAULT_CLASS_START_TIME), 0, 5);
+        $max = substr((string) ($schoolYear?->classEndTime() ?? \App\Models\SchoolYear::DEFAULT_CLASS_END_TIME), 0, 5);
+
+        $clamped = [];
+        foreach ($windows as $index => $window) {
+            $start = max($window['start_time'], $min);
+            $end = min($window['end_time'], $max);
+
+            if ($start >= $end) {
+                throw \Illuminate\Validation\ValidationException::withMessages([
+                    "availability.{$index}.end_time" => "This window is outside the term's class hours ({$min}-{$max}).",
+                ]);
+            }
+
+            $clamped[] = ['days' => $window['days'], 'start_time' => $start, 'end_time' => $end];
+        }
+
+        return $clamped;
+    }
+
+    /**
+     * Collapse the per-Day availability rows back into editable
+     * "days + start/end" windows (Days sharing the same window are
+     * shown as one row).
+     *
+     * @return list<array{days: list<string>, start_time: string, end_time: string}>
+     */
+    private function groupedAvailability(Faculty $faculty): array
+    {
+        $order = ['Mon' => 0, 'Tue' => 1, 'Wed' => 2, 'Thu' => 3, 'Fri' => 4, 'Sat' => 5, 'Sun' => 6];
+
+        return $faculty->availabilities
+            ->groupBy(fn (FacultyAvailability $row) => substr((string) $row->start_time, 0, 5).'|'.substr((string) $row->end_time, 0, 5))
+            ->map(function ($rows, string $key) use ($order) {
+                [$start, $end] = explode('|', $key);
+
+                return [
+                    'days' => $rows->pluck('day')->sortBy(fn ($d) => $order[$d] ?? 99)->values()->all(),
+                    'start_time' => $start,
+                    'end_time' => $end,
+                ];
+            })
+            ->sortBy('start_time')
+            ->values()
+            ->all();
+    }
+
+    /**
+     * Replace this Faculty member's availability windows with the
+     * submitted ones and return a warning if classes they ALREADY have
+     * in the active semester now fall outside it (those aren't moved
+     * automatically — they get rejected the next time they're saved).
+     *
+     * @param  list<array{days: list<string>, start_time: string, end_time: string}>  $windows
+     */
+    private function syncAvailability(Faculty $faculty, array $windows): ?string
+    {
+        DB::transaction(function () use ($faculty, $windows) {
+            FacultyAvailability::query()->where('faculty_id', $faculty->id)->delete();
+
+            $now = now();
+            $rows = [];
+            foreach ($windows as $window) {
+                foreach (array_unique($window['days']) as $day) {
+                    $rows[] = [
+                        'faculty_id' => $faculty->id,
+                        'day' => $day,
+                        'start_time' => $window['start_time'].':00',
+                        'end_time' => $window['end_time'].':00',
+                        'created_at' => $now,
+                        'updated_at' => $now,
+                    ];
+                }
+            }
+
+            if ($rows) {
+                FacultyAvailability::query()->insert($rows);
+            }
+        });
+
+        $conflicts = app(\App\Services\ScheduleConflictService::class);
+        $conflicts->forgetFacultyAvailability($faculty->id);
+
+        if (empty($windows)) {
+            return null;
+        }
+
+        $outside = $faculty->sectionSubjects()
+            ->whereIn('section_id', $conflicts->activeSemesterSectionIds())
+            ->whereNotNull('days')
+            ->whereNotNull('start_time')
+            ->whereNotNull('end_time')
+            ->get(['id', 'days', 'start_time', 'end_time'])
+            ->filter(fn ($row) => $conflicts->findFacultyAvailabilityViolation(
+                $faculty->id,
+                array_values(array_filter(array_map('trim', explode(',', (string) $row->days)))),
+                (string) $row->start_time,
+                (string) $row->end_time
+            ) !== null)
+            ->count();
+
+        return $outside > 0
+            ? "Heads up: {$outside} already-scheduled class(es) fall outside this availability — please reschedule them."
+            : null;
     }
 
     /**

@@ -12,11 +12,14 @@ use App\Http\Controllers\CurriculumController;
 use App\Http\Controllers\CurriculumSubjectController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\DepartmentController;
+use App\Http\Controllers\FacultyAccountController;
 use App\Http\Controllers\FacultyController;
+use App\Http\Controllers\FacultyInviteController;
 use App\Http\Controllers\FacultyScheduleEmailController;
 use App\Http\Controllers\FacultyLoadRequestController;
 use App\Http\Controllers\FacultyRequestController;
 use App\Http\Controllers\MajorController;
+use App\Http\Controllers\MyScheduleController;
 use App\Http\Controllers\ChatController;
 use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\ReportsController;
@@ -34,6 +37,7 @@ use App\Http\Controllers\TeachingQualificationController;
 use App\Http\Controllers\UsersController;
 use App\Http\Controllers\ViewingTermController;
 use App\Http\Controllers\WelcomeController;
+use App\Http\Middleware\RestrictFacultyRole;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/', [WelcomeController::class, 'index'])->name('welcome');
@@ -52,10 +56,26 @@ Route::middleware('guest')->group(function () {
 
     Route::get('/reset-password/{token}', [NewPasswordController::class, 'create'])->name('password.reset');
     Route::post('/reset-password', [NewPasswordController::class, 'store'])->name('password.store');
+
+    // Faculty LOGIN accounts — the link in the "set your password"
+    // invitation (FacultyAccountService). Guest-only; the token is the credential.
+    Route::get('/invite/{token}', [FacultyInviteController::class, 'create'])->name('invite.accept');
+    Route::post('/invite', [FacultyInviteController::class, 'store'])->name('invite.store');
 });
 
 // Authenticated routes.
-Route::middleware('auth')->group(function () {
+//
+// RestrictFacultyRole: a login whose ONLY role is Faculty (a faculty member
+// viewing their own schedule) is limited to My Schedule + logout; every other
+// route redirects/403s for them. Every other role passes straight through.
+Route::middleware(['auth', RestrictFacultyRole::class])->group(function () {
+    // The one page a Faculty-role login can use. The faculty record is always
+    // resolved from the logged-in user — no id in the URL.
+    Route::get('/my-schedule', [MyScheduleController::class, 'index'])->name('my-schedule');
+    // Faculty sets/removes their OWN profile photo (acts on the logged-in user only).
+    Route::post('/my-schedule/photo', [MyScheduleController::class, 'updatePhoto'])->name('my-schedule.photo.update');
+    Route::delete('/my-schedule/photo', [MyScheduleController::class, 'destroyPhoto'])->name('my-schedule.photo.destroy');
+
     Route::get('/dashboard', [DashboardController::class, 'index'])->name('dashboard');
     Route::get('/users', [UsersController::class, 'index'])->name('users');
     Route::post('/users', [UsersController::class, 'store'])->name('users.store');
@@ -132,8 +152,17 @@ Route::middleware('auth')->group(function () {
     Route::post('/scheduling/faculty/import/preview', [FacultyController::class, 'preview'])->name('scheduling.faculty.import.preview');
     Route::post('/scheduling/faculty/import', [FacultyController::class, 'import'])->name('scheduling.faculty.import');
     Route::post('/scheduling/faculty', [FacultyController::class, 'store'])->name('scheduling.faculty.store');
+    // Faculty LOGIN accounts (FacultyAccountController) — authorized per row
+    // through FacultyPolicy::provisionAccount(); "generate" is scoped to the
+    // viewer's own faculty (Admin/Registrar all, Dean/OIC their College,
+    // Assistant Dean GenEd/Minor).
+    Route::post('/scheduling/faculty/accounts/generate', [FacultyAccountController::class, 'generate'])->name('scheduling.faculty.accounts.generate');
+    Route::post('/scheduling/faculty/{faculty}/account', [FacultyAccountController::class, 'store'])->name('scheduling.faculty.account.store');
+    Route::post('/scheduling/faculty/{faculty}/account/resend', [FacultyAccountController::class, 'resend'])->name('scheduling.faculty.account.resend');
+    Route::post('/scheduling/faculty/{faculty}/account/invite-link', [FacultyAccountController::class, 'inviteLink'])->name('scheduling.faculty.account.invite-link');
     Route::get('/scheduling/faculty/{faculty}', [FacultyController::class, 'show'])->name('scheduling.faculty.show');
     Route::put('/scheduling/faculty/{faculty}', [FacultyController::class, 'update'])->name('scheduling.faculty.update');
+    Route::put('/scheduling/faculty/{faculty}/availability', [FacultyController::class, 'updateAvailability'])->name('scheduling.faculty.availability.update');
     Route::patch('/scheduling/faculty/{faculty}/max-load', [FacultyController::class, 'updateMaxLoad'])->name('scheduling.faculty.max-load.update');
     Route::delete('/scheduling/faculty/{faculty}', [FacultyController::class, 'destroy'])->name('scheduling.faculty.destroy');
 
@@ -158,6 +187,8 @@ Route::middleware('auth')->group(function () {
 
     Route::put('/scheduling/teaching-qualifications/{faculty}', [TeachingQualificationController::class, 'update'])->name('scheduling.teaching-qualifications.update');
     Route::get('/scheduling/rooms', [RoomController::class, 'index'])->name('scheduling.rooms');
+    // Room Grid (Floors x Days) — every room's weekly bookings in one read.
+    Route::get('/scheduling/rooms/grid', [RoomController::class, 'grid'])->name('scheduling.rooms.grid')->middleware('cache.json:120');
     Route::get('/scheduling/rooms/{room}/schedule', [RoomController::class, 'schedule'])->name('scheduling.rooms.schedule')->middleware('cache.json:120');
     // Bulk Import — Room Master (mirrors Subject Library's Bulk
     // Import). Placed above the {room} routes so "import" is never
@@ -231,6 +262,10 @@ Route::middleware('auth')->group(function () {
     // every already-booked Start/End Time window, so the Start/End
     // Time dropdowns can grey out slots that would conflict before
     // the Registrar even picks one.
+    // Availability Check modal (Section Subjects page) — every Faculty/Room
+    // timetable + workload for this Section's term in one read. Deliberately
+    // NOT behind cache.json: availability must reflect the latest saves.
+    Route::get('/scheduling/section-subjects/{section}/availability', [SectionSubjectController::class, 'availability'])->name('scheduling.section-subjects.availability');
     Route::get('/scheduling/section-subjects/{section}/{subject}/busy-times', [SectionSubjectController::class, 'busyTimes'])->name('scheduling.section-subjects.busy-times')->middleware('cache.json:120');
 
     // Room Scheduler (Room-Centric Time Grid) — read-only for now; the
@@ -320,6 +355,7 @@ Route::middleware('auth')->group(function () {
     Route::put('/settings/auto-schedule', [SettingsController::class, 'updateAutoSchedule'])->name('settings.autoschedule.update');
     Route::put('/settings/irregular', [SettingsController::class, 'updateIrregular'])->name('settings.irregular.update');
     Route::put('/settings/notifications', [SettingsController::class, 'updateNotifications'])->name('settings.notifications.update');
+    Route::put('/settings/college-colors', [SettingsController::class, 'updateCollegeColors'])->name('settings.college-colors.update');
     Route::post('/settings/system/refresh-cache', [SettingsController::class, 'refreshCache'])->name('settings.system.refresh-cache');
 
     // ACTIVE SESSIONS — Administrator-only "who's logged in" tab on

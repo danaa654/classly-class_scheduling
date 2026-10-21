@@ -3,6 +3,7 @@ import { Head, router, usePage } from '@inertiajs/vue3';
 import { ref, computed, watch } from 'vue';
 import { useToast } from 'primevue/usetoast';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import PageHeader from '@/Components/PageHeader.vue';
 import Select from 'primevue/select';
 import MultiSelect from 'primevue/multiselect';
 import Button from 'primevue/button';
@@ -14,6 +15,7 @@ import InfoPopover from '@/Components/InfoPopover.vue';
 import SendScheduleModal from './Partials/SendScheduleModal.vue';
 import BulkSendScheduleModal from './Partials/BulkSendScheduleModal.vue';
 import { useTheme } from '@/composables/useTheme';
+import { useCollegeColors, collegeSoftStyle } from '@/composables/useCollegeColors';
 
 const { theme } = useTheme();
 const isDark = computed(() => theme.value === 'dark');
@@ -175,6 +177,7 @@ const form = ref({
     section_type: props.filters.section_type || '',
     faculty_id: props.filters.faculty_id || '',
     room_id: props.filters.room_id || '',
+    day: props.filters.day || '',
 });
 const reportType = ref(props.reportType || '');
 
@@ -348,6 +351,14 @@ watch(facultyIsMultiple, (isMultiple) => {
     if (!isMultiple) facultyIds.value = [];
 });
 const needsRoom = computed(() => ['schedule_by_room', 'room_utilization', 'room_conflicts'].includes(reportType.value));
+
+// DAY FILTER — only the reports that list scheduled classes. Pick e.g.
+// Tuesday and Schedule by Faculty shows who is scheduled on Tuesdays (and
+// the Grid view shows just that day's column). Options are the scheduling
+// days from Term Setup for the selected year (gridAllDays).
+const needsDay = computed(() => ['schedule_by_faculty', 'schedule_by_room', 'schedule_by_section', 'master_schedule'].includes(reportType.value));
+const DAY_FULL_NAMES = { Mon: 'Monday', Tue: 'Tuesday', Wed: 'Wednesday', Thu: 'Thursday', Fri: 'Friday', Sat: 'Saturday', Sun: 'Sunday' };
+const dayOptions = computed(() => [{ label: 'All Days', value: '' }, ...gridAllDays.value.map((d) => ({ label: DAY_FULL_NAMES[d] || d, value: d }))]);
 // Grid (weekly-timetable-style) view, for the two report types whose rows
 // actually carry Day/Start/End — Schedule by Room and Schedule by Faculty.
 // Room Utilization/Conflicts and Faculty Teaching Load are plain summary
@@ -436,14 +447,11 @@ const gridLunchRangeLabel = computed(() => `${formatHourLabel(props.schedulingWi
 // to the flat fields themselves for report types that never split.
 const rowSchedules = (row) => (row.Schedules?.length ? row.Schedules : [{ Room: row.Room, Day: row.Day, Start: row.Start, End: row.End }]);
 
-// Only the days that actually appear in this report's rows, in
-// calendar order — a room/faculty with no Saturday classes doesn't
-// need an empty Saturday column.
-const gridDays = computed(() => {
-    const present = new Set();
-    (props.report?.rows ?? []).forEach((row) => rowSchedules(row).forEach((s) => (s.Day || '').split(',').map((d) => d.trim()).filter(Boolean).forEach((d) => present.add(d))));
-    return gridAllDays.value.filter((d) => present.has(d));
-});
+// Every scheduling day from Term Setup (Available Days for the selected
+// School Year, e.g. Mon-Sat), in calendar order — NOT just the days that
+// happen to have classes. A room/faculty with no Saturday classes still
+// shows an empty Saturday column, so the grid always matches Term Setup.
+const gridDays = computed(() => (props.filters.day && gridAllDays.value.includes(props.filters.day) ? [props.filters.day] : gridAllDays.value));
 
 // One block per (day, meeting) this report's rows actually occupy —
 // startIndex/span computed the same way RoomGrid.vue computes them for
@@ -511,6 +519,14 @@ const gridIsCovered = (day, rowIndex) => gridBlocks.value.some((b) => b.day === 
 // convention as the Section/Room scheduling grid's Online chips.
 const gridBlockIsOnline = (block) => block?.Room === 'Online';
 
+// COLLEGE COLORS — every block is colored by the College that owns its
+// Section (Settings -> College Colors), same as the Room/Section grids.
+// Face-to-Face vs Online is no longer shown by color (a block's color now
+// means "college"), so an Online block gets a dashed border instead — and
+// its third line already reads "Online".
+const { colorFor } = useCollegeColors();
+const gridBlockStyle = (block) => collegeSoftStyle(colorFor(block?.CollegeId), isDark.value);
+
 // Grid cell label: Room report shows Subject/Section/Faculty; Faculty
 // report shows Subject/Section/Room — whichever the row doesn't already
 // name in its own column heading.
@@ -564,6 +580,8 @@ const forcesIrregular = computed(() => ['irregular_sections', 'irregular_merge_r
 // multi-select mode is active.
 function buildQuery() {
     const query = { ...form.value, term: selectedTerm.value, report_type: reportType.value };
+    // A leftover Day only applies to the reports that show the Day field.
+    if (!needsDay.value) query.day = '';
     // GENED_COLLEGE_VALUE only exists to filter the Faculty picker on the
     // client — it isn't a real College/Program id, so never send it to the
     // backend (which would just match nothing and return an empty report).
@@ -584,7 +602,7 @@ function generate() {
 }
 
 function resetFilters() {
-    form.value = { academic_year: '', semester: '', college_id: '', major_id: '', year_level: '', section_id: '', section_type: '', faculty_id: '', room_id: '' };
+    form.value = { academic_year: '', semester: '', college_id: '', major_id: '', year_level: '', section_id: '', section_type: '', faculty_id: '', room_id: '', day: '' };
     sectionIds.value = [];
     facultyIds.value = [];
     selectedTerm.value = 'all';
@@ -671,6 +689,7 @@ const activeFiltersLabel = computed(() => {
     if (form.value.academic_year) parts.push(form.value.academic_year);
     if (form.value.semester) parts.push(form.value.semester);
     if (form.value.section_type) parts.push(form.value.section_type);
+    if (needsDay.value && props.filters.day) parts.push(DAY_FULL_NAMES[props.filters.day] || props.filters.day);
     return parts.join(' · ');
 });
 
@@ -875,21 +894,10 @@ const maxSubjectCategoryCount = computed(() => Math.max(1, ...(props.summary.bre
             <span class="text-lg font-semibold" :class="isDark ? 'text-white' : 'text-[#1E293B]'">Reports</span>
         </template>
 
-        <div class="max-w-7xl mx-auto w-full" :class="isDark ? 'dark-scope' : ''">
-            <div class="neu-card neu-spotlight relative mb-8 overflow-hidden rounded-2xl no-print">
-                <div class="pointer-events-none absolute inset-0 overflow-hidden rounded-2xl">
-                    <div class="absolute inset-0" :class="isDark ? 'bg-gradient-to-br from-blue-500/10 via-transparent to-red-500/10' : 'bg-gradient-to-br from-blue-50 via-transparent to-red-50/60'"></div>
-                    <div class="absolute -right-10 -top-16 h-44 w-44 rounded-full bg-gradient-to-br" :class="isDark ? 'from-blue-500/20 via-blue-500/5 to-transparent' : 'from-blue-200/80 via-blue-100/40 to-transparent'"></div>
-                    <div class="absolute -bottom-20 right-16 h-40 w-40 rounded-full bg-gradient-to-tr" :class="isDark ? 'from-red-500/20 via-red-500/5 to-transparent' : 'from-red-200/70 via-red-100/30 to-transparent'"></div>
-                    <div class="absolute -left-10 bottom-0 h-28 w-28 rounded-full bg-gradient-to-tr border-4" :class="isDark ? 'from-blue-500/10 to-transparent border-blue-400/10' : 'from-blue-100/60 to-transparent border-blue-100'"></div>
-                    <div class="absolute left-[38%] top-0 h-3 w-3 rounded-full bg-gradient-to-br" :class="isDark ? 'from-red-400/50 to-blue-400/30' : 'from-red-400/80 to-blue-300/60'"></div>
-                    <div class="absolute left-[55%] bottom-4 h-20 w-20 rounded-full bg-gradient-to-r blur-xl" :class="isDark ? 'from-blue-500/10 to-red-500/10' : 'from-blue-200/40 to-red-200/40'"></div>
-                </div>
-                <div class="relative flex items-center justify-between rounded-2xl p-6 transition-colors duration-300">
-                    <div>
-                        <h1 class="text-2xl font-bold tracking-tight flex items-center gap-2" :class="isDark ? 'text-white' : 'text-[#1E293B]'">
-                            Reports
-                            <InfoPopover
+        <div class="w-full" :class="isDark ? 'dark-scope' : ''">
+            <PageHeader title="Reports" subtitle="Generate and view academic scheduling reports." icon="pi pi-chart-bar" tone="rose">
+                <template #info>
+                    <InfoPopover
                                 title="Reports"
                                 :paragraphs="[
                                     'Generate read-only reports on scheduling, faculty load, room usage, and sections for a given academic term.',
@@ -900,11 +908,8 @@ const maxSubjectCategoryCount = computed(() => Math.max(1, ...(props.summary.bre
                                     'Use Print or Export CSV to save a generated report; reports themselves are not saved in the system.',
                                 ]"
                             />
-                        </h1>
-                        <p class="mt-1" :class="isDark ? 'text-slate-400' : 'text-slate-500'">Generate and view academic scheduling reports.</p>
-                    </div>
-                </div>
-            </div>
+                </template>
+            </PageHeader>
 
             <!-- Global Filters -->
             <div class="neu-card no-print rounded-2xl p-6 transition-colors duration-300">
@@ -1029,6 +1034,16 @@ const maxSubjectCategoryCount = computed(() => Math.max(1, ...(props.summary.bre
                         <div class="relative mt-1">
                             <i class="pi pi-map-marker pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-sm" :class="isDark ? 'text-slate-500' : 'text-slate-400'"></i>
                             <Select v-model="form.room_id" :options="roomOptions" optionLabel="label" optionValue="value" class="neu-inset w-full !rounded-xl !border-none" :pt="{ label: { class: '!pl-9' }, overlay: { class: isDark ? 'dark-scope' : '' } }" />
+                        </div>
+                    </div>
+                    <div v-if="needsDay">
+                        <label class="text-xs font-semibold" :class="isDark ? 'text-slate-400' : 'text-slate-500'">
+                            Day
+                            <span class="font-normal normal-case" :class="isDark ? 'text-slate-500' : 'text-slate-400'">— only classes meeting that day</span>
+                        </label>
+                        <div class="relative mt-1">
+                            <i class="pi pi-calendar pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-sm" :class="isDark ? 'text-slate-500' : 'text-slate-400'"></i>
+                            <Select v-model="form.day" :options="dayOptions" optionLabel="label" optionValue="value" class="neu-inset w-full !rounded-xl !border-none" :pt="{ label: { class: '!pl-9' }, overlay: { class: isDark ? 'dark-scope' : '' } }" />
                         </div>
                     </div>
                 </div>
@@ -1262,12 +1277,13 @@ const maxSubjectCategoryCount = computed(() => Math.max(1, ...(props.summary.bre
                                 >
                                     <div
                                         v-if="gridBlockAt(day, rowIndex)"
-                                        class="absolute inset-0.5 overflow-hidden rounded-md px-2 py-1 text-[11px] leading-tight"
-                                        :class="gridBlockIsOnline(gridBlockAt(day, rowIndex)) ? (isDark ? 'bg-sky-500/10' : 'bg-sky-50') : (isDark ? 'bg-emerald-500/10' : 'bg-emerald-50')"
+                                        class="absolute inset-0.5 overflow-hidden rounded-md border px-2 py-1 text-[11px] leading-tight"
+                                        :class="gridBlockIsOnline(gridBlockAt(day, rowIndex)) ? 'border-dashed' : ''"
+                                        :style="gridBlockStyle(gridBlockAt(day, rowIndex))"
                                     >
-                                        <p class="truncate font-semibold" :class="gridBlockIsOnline(gridBlockAt(day, rowIndex)) ? (isDark ? 'text-sky-300' : 'text-sky-700') : (isDark ? 'text-emerald-300' : 'text-emerald-700')">{{ gridCellLabel(gridBlockAt(day, rowIndex)).line1 }}</p>
-                                        <p class="truncate" :class="isDark ? 'text-slate-400' : 'text-slate-500'">{{ gridCellLabel(gridBlockAt(day, rowIndex)).line2 }}</p>
-                                        <p class="truncate text-[10px]" :class="gridBlockIsOnline(gridBlockAt(day, rowIndex)) ? (isDark ? 'text-sky-400' : 'text-sky-600') : (isDark ? 'text-slate-500' : 'text-slate-400')">{{ gridCellLabel(gridBlockAt(day, rowIndex)).line3 }}</p>
+                                        <p class="truncate font-semibold">{{ gridCellLabel(gridBlockAt(day, rowIndex)).line1 }}</p>
+                                        <p class="truncate opacity-80">{{ gridCellLabel(gridBlockAt(day, rowIndex)).line2 }}</p>
+                                        <p class="truncate text-[10px] opacity-75">{{ gridCellLabel(gridBlockAt(day, rowIndex)).line3 }}</p>
                                     </div>
                                 </div>
                             </template>

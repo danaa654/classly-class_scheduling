@@ -162,6 +162,12 @@ const totalIssues = computed(() =>
         .reduce((sum, item) => sum + (props.conflicts[item.key] ?? 0), 0)
 );
 
+// Only tiles that need a look (or are progress info) get a full tile; the
+// checks that are fine (0) collapse into one calm "all clear" line, so the
+// real problem isn't buried among five zeros.
+const visibleItems = computed(() => items.value.filter((item) => item.informational || valueFor(item) > 0));
+const clearItems = computed(() => items.value.filter((item) => !item.informational && !(valueFor(item) > 0)));
+
 const cardPt = computed(() => ({
     body: { class: props.isDark ? '!bg-transparent' : '' },
 }));
@@ -198,9 +204,9 @@ const cardPt = computed(() => ({
                 <p class="font-medium" :class="isDark ? 'text-emerald-300' : 'text-emerald-800'">No scheduling conflicts detected.</p>
             </div>
 
-            <div v-else class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <div v-else class="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div
-                    v-for="item in items"
+                    v-for="item in visibleItems"
                     :key="item.key"
                     class="relative rounded-xl"
                     :class="(!item.informational && valueFor(item) > 0) ? 'neu-card neon-border' : 'neu-inset'"
@@ -295,6 +301,23 @@ const cardPt = computed(() => ({
                         </div>
                     </button>
                 </div>
+            </div>
+
+            <div
+                v-if="totalIssues > 0 && clearItems.length"
+                class="mt-4 flex flex-wrap items-center gap-2 text-xs"
+                :class="isDark ? 'text-slate-400' : 'text-slate-500'"
+            >
+                <span class="font-medium">All clear:</span>
+                <span
+                    v-for="item in clearItems"
+                    :key="item.key"
+                    class="inline-flex items-center gap-1 rounded-full px-2.5 py-1 font-medium"
+                    :class="isDark ? 'bg-emerald-400/10 text-emerald-300' : 'bg-emerald-50 text-emerald-700'"
+                >
+                    <i class="pi pi-check text-[10px]"></i>
+                    {{ item.label }}
+                </span>
             </div>
         </template>
         </Card>

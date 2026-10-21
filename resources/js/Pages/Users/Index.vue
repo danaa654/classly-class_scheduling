@@ -26,8 +26,10 @@ import TabPanel from 'primevue/tabpanel';
 import Menu from 'primevue/menu';
 import Swal from 'sweetalert2';
 import InfoPopover from '@/Components/InfoPopover.vue';
+import AccountForm from '@/Components/Account/AccountForm.vue';
 import PasswordRequirementsChecklist from '@/Components/PasswordRequirementsChecklist.vue';
 import { useTheme } from '@/composables/useTheme';
+import { useCollegeColors, collegeSolidStyle } from '@/composables/useCollegeColors';
 
 const { theme } = useTheme();
 const isDark = computed(() => theme.value === 'dark');
@@ -62,6 +64,105 @@ watch(
 );
 
 const search = ref('');
+
+/* ------------------------------------------------------------------ */
+/* Roster view: role filter, cards/table toggle, ID-card helpers       */
+/* ------------------------------------------------------------------ */
+
+// Each ID card takes the colour of the College it belongs to (the same
+// colours set in Settings -> College Colors and used on the Room/Section
+// grids). Accounts with no College (Administrator, Registrar) share one
+// "system" colour.
+const { colorFor } = useCollegeColors();
+const SYSTEM_COLOR = '#4338ca';
+const cardColor = (user) => (user.collegeId != null ? colorFor(user.collegeId) : SYSTEM_COLOR);
+// White or dark text, whichever reads on that colour (yellow needs dark).
+const onColor = (hex) => collegeSolidStyle(hex).color;
+const groupKey = (user) => (user.collegeId != null ? `c${user.collegeId}` : 'sys');
+
+const roleFilter = ref('All');
+const groupFilter = ref('All');
+
+const VIEW_KEY = 'classly.users.view';
+const readView = () => {
+    try {
+        return localStorage.getItem(VIEW_KEY) === 'table' ? 'table' : 'cards';
+    } catch {
+        return 'cards';
+    }
+};
+const viewMode = ref(readView());
+watch(viewMode, (mode) => {
+    try {
+        localStorage.setItem(VIEW_KEY, mode);
+    } catch {
+        /* storage unavailable — the choice just won't persist */
+    }
+});
+
+// Names arrive in capitals ("NENITA S. CANOMON"); show them in sentence
+// form, but keep roman-numeral suffixes (III) in capitals.
+const titleCase = (value) =>
+    (value ?? '')
+        .toLowerCase()
+        .replace(/(^|[\s\-'(])([a-zà-ÿ])/g, (m, lead, ch) => lead + ch.toUpperCase())
+        .replace(/\b(Ii|Iii|Iv)\b/g, (m) => m.toUpperCase());
+
+const initialsFor = (user) => {
+    const first = user.firstName?.trim()?.[0] ?? '';
+    const last = user.lastName?.trim()?.[0] ?? '';
+    if (first || last) return (first + last).toUpperCase();
+    return (user.fullName ?? '?').trim().slice(0, 2).toUpperCase();
+};
+
+const groupSegments = computed(() => {
+    const groups = new Map();
+    props.users.forEach((u) => {
+        const key = groupKey(u);
+        if (!groups.has(key)) {
+            groups.set(key, {
+                key,
+                label: u.collegeId != null ? (u.college || 'College') : 'System-wide',
+                color: cardColor(u),
+                count: 0,
+            });
+        }
+        groups.get(key).count += 1;
+    });
+    return [...groups.values()].sort((x, y) => (x.key === 'sys') - (y.key === 'sys') || x.label.localeCompare(y.label));
+});
+
+const brokenPhotos = ref({});
+const onPhotoError = (id) => {
+    brokenPhotos.value = { ...brokenPhotos.value, [id]: true };
+};
+
+const activeCount = computed(() => props.users.filter((u) => u.status === 'Active').length);
+
+const filteredUsers = computed(() => {
+    const term = search.value.trim().toLowerCase();
+    return props.users.filter((u) => {
+        if (roleFilter.value !== 'All' && u.role !== roleFilter.value) return false;
+        if (groupFilter.value !== 'All' && groupKey(u) !== groupFilter.value) return false;
+        if (!term) return true;
+        return (u.fullName ?? '').toLowerCase().includes(term) || (u.email ?? '').toLowerCase().includes(term);
+    });
+});
+
+const clearFilters = () => {
+    search.value = '';
+    roleFilter.value = 'All';
+    groupFilter.value = 'All';
+};
+
+const copyEmail = async (user) => {
+    try {
+        await navigator.clipboard.writeText(user.email);
+        toast.add({ severity: 'success', summary: 'Copied', detail: `${user.email} copied`, life: 2500 });
+    } catch {
+        toast.add({ severity: 'warn', summary: 'Copy failed', detail: 'Select the email and copy it manually.', life: 3500 });
+    }
+};
 
 // Only Administrators get the "Manage Account" tab — everyone else on
 // this page (which is itself Administrator-only per the sidebar) still
@@ -463,56 +564,70 @@ const onUpdateAccount = () => {
             <span class="text-lg font-semibold" :class="isDark ? 'text-white' : 'text-[#1E293B]'">User Management</span>
         </template>
 
-        <div class="max-w-7xl mx-auto w-full" :class="isDark ? 'dark-scope' : ''">
-            <!-- Page Title -->
-            <div class="neu-card neu-spotlight relative mb-8 overflow-hidden rounded-2xl">
-                <!-- subtle blue/red gradient wash + decorative shapes -->
-                <div class="pointer-events-none absolute inset-0 overflow-hidden rounded-2xl">
-                    <div
-                        class="absolute inset-0"
-                        :class="isDark
-                            ? 'bg-gradient-to-br from-blue-500/10 via-transparent to-red-500/10'
-                            : 'bg-gradient-to-br from-blue-50 via-transparent to-red-50/60'"
-                    ></div>
-                    <div
-                        class="absolute -right-10 -top-16 h-44 w-44 rounded-full bg-gradient-to-br"
-                        :class="isDark ? 'from-blue-500/20 via-blue-500/5 to-transparent' : 'from-blue-200/80 via-blue-100/40 to-transparent'"
-                    ></div>
-                    <div
-                        class="absolute -bottom-20 right-16 h-40 w-40 rounded-full bg-gradient-to-tr"
-                        :class="isDark ? 'from-red-500/20 via-red-500/5 to-transparent' : 'from-red-200/70 via-red-100/30 to-transparent'"
-                    ></div>
-                    <div
-                        class="absolute -left-10 bottom-0 h-28 w-28 rounded-full bg-gradient-to-tr border-4"
-                        :class="isDark ? 'from-blue-500/10 to-transparent border-blue-400/10' : 'from-blue-100/60 to-transparent border-blue-100'"
-                    ></div>
-                    <div
-                        class="absolute left-[38%] top-0 h-3 w-3 rounded-full bg-gradient-to-br"
-                        :class="isDark ? 'from-red-400/50 to-blue-400/30' : 'from-red-400/80 to-blue-300/60'"
-                    ></div>
-                    <div
-                        class="absolute left-[55%] bottom-4 h-20 w-20 rounded-full bg-gradient-to-r blur-xl"
-                        :class="isDark ? 'from-blue-500/10 to-red-500/10' : 'from-blue-200/40 to-red-200/40'"
-                    ></div>
-                </div>
-                <div class="relative rounded-2xl p-6 transition-colors duration-300">
-                    <h1 class="text-2xl font-bold tracking-tight flex items-center gap-2" :class="isDark ? 'text-white' : 'text-[#1E293B]'">
-                        User Management
-                        <InfoPopover
-                            title="User Management"
-                            :paragraphs="[
-                                'Manages system accounts and role assignments — who can log in to CLASSLY and what they\'re allowed to do.',
-                            ]"
-                            :bullets="[
-                                'A user\'s role (Admin, Registrar, Dean/OIC, Faculty, etc.) determines which pages and actions they can access.',
-                                'Deactivating an account blocks login without deleting their records or history.',
-                                'College-scoped roles (e.g. Dean) only see and manage data for their assigned college.',
-                            ]"
-                        />
-                    </h1>
-                    <p class="mt-1" :class="isDark ? 'text-slate-400' : 'text-slate-500'">
-                        Manage system accounts and role assignments.
+        <div class="w-full" :class="isDark ? 'dark-scope' : ''">
+            <!-- Page title + roster: the bar shows who holds which role and doubles as the role filter -->
+            <div class="neu-card relative mb-8 rounded-2xl">
+                <div class="roster-head">
+                    <div class="min-w-0">
+                        <h1 class="text-2xl font-bold tracking-tight flex items-center gap-2" :class="isDark ? 'text-white' : 'text-[#1E293B]'">
+                            User Management
+                            <InfoPopover
+                                title="User Management"
+                                :paragraphs="[
+                                    'Manages system accounts and role assignments — who can log in to CLASSLY and what they\'re allowed to do.',
+                                ]"
+                                :bullets="[
+                                    'A user\'s role (Admin, Registrar, Dean/OIC, Faculty, etc.) determines which pages and actions they can access.',
+                                    'Deactivating an account blocks login without deleting their records or history.',
+                                    'College-scoped roles (e.g. Dean) only see and manage data for their assigned college.',
+                                ]"
+                            />
+                        </h1>
+                        <p class="mt-1" :class="isDark ? 'text-slate-400' : 'text-slate-500'">
+                            Manage system accounts and role assignments.
+                        </p>
+                    </div>
+                    <p class="roster-total" :class="isDark ? 'text-slate-300' : 'text-slate-600'">
+                        <span class="roster-total-num">{{ users.length }}</span>
+                        {{ users.length === 1 ? 'account' : 'accounts' }},
+                        <span class="roster-total-active">{{ activeCount }} active</span>
                     </p>
+                </div>
+
+                <div v-if="groupSegments.length" class="roster-body">
+                    <div class="roster-bar" role="img" :aria-label="groupSegments.map((g) => `${g.count} in ${g.label}`).join(', ')">
+                        <span
+                            v-for="seg in groupSegments"
+                            :key="seg.key"
+                            class="roster-seg"
+                            :style="{ flexGrow: seg.count, background: seg.color }"
+                            :title="`${seg.label}: ${seg.count}`"
+                        ></span>
+                    </div>
+                    <div class="roster-chips" role="group" aria-label="Filter by college">
+                        <button
+                            type="button"
+                            class="roster-chip"
+                            :class="{ 'is-on': groupFilter === 'All' }"
+                            :aria-pressed="groupFilter === 'All'"
+                            :style="{ '--chip': '#334155', '--chip-on': '#ffffff' }"
+                            @click="groupFilter = 'All'"
+                        >
+                            Everyone <b>{{ users.length }}</b>
+                        </button>
+                        <button
+                            v-for="seg in groupSegments"
+                            :key="seg.key"
+                            type="button"
+                            class="roster-chip"
+                            :class="{ 'is-on': groupFilter === seg.key }"
+                            :aria-pressed="groupFilter === seg.key"
+                            :style="{ '--chip': seg.color, '--chip-on': onColor(seg.color) }"
+                            @click="groupFilter = groupFilter === seg.key ? 'All' : seg.key"
+                        >
+                            <i class="roster-dot"></i>{{ seg.label }} <b>{{ seg.count }}</b>
+                        </button>
+                    </div>
                 </div>
             </div>
 
@@ -534,7 +649,7 @@ const onUpdateAccount = () => {
                                 <!-- Top Toolbar -->
                                 <Toolbar class="!bg-transparent !border-0 !px-0 !pt-0 !pb-4">
                                     <template #start>
-                                        <span class="relative w-full sm:w-80">
+                                        <span class="relative w-full sm:w-80 mr-3">
                                             <i class="pi pi-search absolute left-3 top-1/2 -translate-y-1/2 text-sm" :class="isDark ? 'text-slate-500' : 'text-slate-400'"></i>
                                             <InputText
                                                 v-model="search"
@@ -543,21 +658,132 @@ const onUpdateAccount = () => {
                                                 :class="isDark ? '!text-white placeholder:!text-slate-500' : ''"
                                             />
                                         </span>
+                                        <select v-model="roleFilter" class="role-select" aria-label="Filter by role">
+                                            <option value="All">All roles</option>
+                                            <option v-for="o in roleOptions" :key="o.value" :value="o.value">{{ o.label }}</option>
+                                        </select>
                                     </template>
                                     <template #end>
-                                        <Button label="Add User" icon="pi pi-plus" @click="openAddUser" />
+                                        <div class="flex items-center gap-3">
+                                            <div class="view-toggle" role="group" aria-label="Layout">
+                                                <button
+                                                    type="button"
+                                                    :class="{ 'is-on': viewMode === 'cards' }"
+                                                    :aria-pressed="viewMode === 'cards'"
+                                                    title="ID cards"
+                                                    @click="viewMode = 'cards'"
+                                                >
+                                                    <i class="pi pi-id-card"></i><span>Cards</span>
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    :class="{ 'is-on': viewMode === 'table' }"
+                                                    :aria-pressed="viewMode === 'table'"
+                                                    title="Table"
+                                                    @click="viewMode = 'table'"
+                                                >
+                                                    <i class="pi pi-table"></i><span>Table</span>
+                                                </button>
+                                            </div>
+                                            <Button label="Add User" icon="pi pi-plus" @click="openAddUser" />
+                                        </div>
                                     </template>
                                 </Toolbar>
 
+                                <!-- ID-card layout: one academy ID per account -->
+                                <div v-if="viewMode === 'cards'">
+                                    <div v-if="filteredUsers.length" class="id-grid">
+                                        <article
+                                            v-for="data in filteredUsers"
+                                            :key="data.id"
+                                            class="id-card"
+                                            :class="{ 'is-inactive': data.status !== 'Active' }"
+                                            :style="{ '--role': cardColor(data), '--on': onColor(cardColor(data)) }"
+                                        >
+                                            <header class="id-band">
+                                                <span class="id-slot" aria-hidden="true"></span>
+                                                <span class="id-role">{{ data.role }}</span>
+                                                <span
+                                                    v-if="data.isFaculty"
+                                                    class="id-faculty"
+                                                    v-tooltip.top="'Linked to a Faculty record — manage roles from the Faculty page'"
+                                                >
+                                                    <i class="pi pi-graduation-cap"></i>Faculty
+                                                </span>
+                                            </header>
+
+                                            <div class="id-avatar">
+                                                <img
+                                                    v-if="data.photoUrl && !brokenPhotos[data.id]"
+                                                    :src="data.photoUrl"
+                                                    :alt="`${titleCase(data.fullName)}'s profile photo`"
+                                                    class="id-avatar-img"
+                                                    loading="lazy"
+                                                    @error="onPhotoError(data.id)"
+                                                />
+                                                <span v-else aria-hidden="true">{{ initialsFor(data) }}</span>
+                                            </div>
+
+                                            <div class="id-main">
+                                                <h3 class="id-name">{{ titleCase(data.fullName) }}</h3>
+                                                <p class="id-college">{{ data.college || 'System-wide' }}</p>
+                                                <p v-if="data.department" class="id-dept">{{ data.department }}</p>
+                                            </div>
+
+                                            <button type="button" class="id-email" :title="`Copy ${data.email}`" @click="copyEmail(data)">
+                                                <i class="pi pi-envelope"></i>
+                                                <span>{{ data.email }}</span>
+                                                <i class="pi pi-copy id-email-copy"></i>
+                                            </button>
+
+                                            <footer class="id-foot">
+                                                <div class="id-status">
+                                                    <span class="id-state" :class="data.status === 'Active' ? 'is-active' : 'is-off'">
+                                                        <i></i>{{ data.status }}
+                                                    </span>
+                                                    <span v-if="data.mustChangePassword" class="id-pw" title="This user must set a new password at next sign-in">
+                                                        <i class="pi pi-key"></i>Password change required
+                                                    </span>
+                                                </div>
+                                                <div class="id-actions">
+                                                    <Button
+                                                        icon="pi pi-pencil"
+                                                        text
+                                                        rounded
+                                                        severity="secondary"
+                                                        size="small"
+                                                        :aria-label="`Edit ${titleCase(data.fullName)}`"
+                                                        @click="openEditUser(data)"
+                                                    />
+                                                    <Button
+                                                        icon="pi pi-ellipsis-v"
+                                                        text
+                                                        rounded
+                                                        severity="secondary"
+                                                        size="small"
+                                                        :aria-label="`More actions for ${titleCase(data.fullName)}`"
+                                                        @click="toggleRowMenu(data.id, $event)"
+                                                    />
+                                                    <Menu :ref="setRowMenuRef(data.id)" :model="rowMenuItemsFor(data)" :popup="true" />
+                                                </div>
+                                            </footer>
+                                        </article>
+                                    </div>
+                                    <div v-else class="id-empty">
+                                        <p class="font-medium">No accounts match.</p>
+                                        <p class="text-sm mt-1">Clear the search or choose another role.</p>
+                                        <Button label="Show everyone" size="small" outlined class="mt-3" @click="clearFilters" />
+                                    </div>
+                                </div>
+
                                 <!-- Users Table -->
                                 <DataTable
-                                    :value="users"
+                                    v-else
+                                    :value="filteredUsers"
                                     class="neu-inset neu-table rounded-xl overflow-hidden"
                                     :class="isDark ? 'neu-table-dark' : ''"
                                     stripedRows
                                     responsiveLayout="scroll"
-                                    :globalFilterFields="['fullName', 'email']"
-                                    :filters="{ global: { value: search, matchMode: 'contains' } }"
                                 >
                                     <template #empty>
                                         <div class="text-center py-10">
@@ -568,7 +794,18 @@ const onUpdateAccount = () => {
 
                                     <Column field="fullName" header="Full Name" />
                                     <Column field="email" header="Email" />
-                                    <Column field="role" header="Role" />
+                                    <Column field="role" header="Role">
+                                        <template #body="{ data }">
+                                            <span>{{ data.role }}</span>
+                                            <Tag
+                                                v-if="data.isFaculty"
+                                                value="Faculty"
+                                                severity="info"
+                                                class="ml-2"
+                                                v-tooltip.top="'Linked to a Faculty record — manage roles from the Faculty page'"
+                                            />
+                                        </template>
+                                    </Column>
                                     <Column field="college" header="College" />
                                     <Column field="department" header="Department" />
                                     <Column field="status" header="Status">
@@ -616,145 +853,17 @@ const onUpdateAccount = () => {
 
                     <!-- Manage Account Tab (Administrator only) -->
                     <TabPanel v-if="isAdministrator" value="account">
-                        <div class="neu-card rounded-2xl transition-colors duration-300">
-                        <Card
-                            class="!rounded-2xl !bg-transparent !border-0 !shadow-none max-w-2xl"
-                            :pt="{ body: { class: '!bg-transparent' } }"
-                        >
-                            <template #content>
-                                <h2 class="text-lg font-bold mb-1" :class="isDark ? 'text-white' : 'text-[#1E293B]'">Manage Account</h2>
-                                <p class="text-sm mb-5" :class="isDark ? 'text-slate-400' : 'text-slate-500'">
-                                    Update your own Administrator profile and password.
-                                </p>
-
-                                <form class="pt-1 neu-form" autocomplete="off" @submit.prevent="onUpdateAccount">
-                                    <div class="flex items-center gap-4 mb-6">
-                                        <div class="relative shrink-0">
-                                            <img v-if="accountAvatarUrl" :src="accountAvatarUrl" class="h-16 w-16 rounded-full object-cover border border-slate-200" alt="Profile photo" />
-                                            <span v-else class="flex h-16 w-16 items-center justify-center rounded-full bg-slate-200 text-lg font-bold text-slate-600">{{ accountInitials }}</span>
-                                        </div>
-                                        <div>
-                                            <input ref="photoInput" type="file" accept="image/*" class="hidden" @change="onPhotoSelected" />
-                                            <div class="flex gap-2">
-                                                <Button type="button" label="Upload Photo" icon="pi pi-camera" size="small" outlined @click="photoInput?.click()" />
-                                                <Button v-if="accountAvatarUrl" type="button" label="Remove" icon="pi pi-trash" size="small" text severity="danger" @click="onRemovePhoto" />
-                                            </div>
-                                            <p class="text-xs mt-1" :class="isDark ? 'text-slate-500' : 'text-slate-400'">JPG or PNG, up to 2MB.</p>
-                                            <small v-if="accountForm.errors.photo" class="text-red-500 block">{{ accountForm.errors.photo }}</small>
-                                        </div>
-                                    </div>
-
-                                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-5">
-                                        <FloatLabel variant="on">
-                                            <InputText
-                                                id="accFirstName"
-                                                v-model="accountForm.first_name"
-                                                class="w-full"
-                                                autocomplete="off"
-                                                :invalid="!!accountForm.errors.first_name"
-                                            />
-                                            <label for="accFirstName">First Name *</label>
-                                        </FloatLabel>
-
-                                        <FloatLabel variant="on">
-                                            <InputText
-                                                id="accMiddleName"
-                                                v-model="accountForm.middle_name"
-                                                class="w-full"
-                                                autocomplete="off"
-                                            />
-                                            <label for="accMiddleName">Middle Name</label>
-                                        </FloatLabel>
-                                    </div>
-
-                                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-5 mt-5">
-                                        <FloatLabel variant="on">
-                                            <InputText
-                                                id="accLastName"
-                                                v-model="accountForm.last_name"
-                                                class="w-full"
-                                                autocomplete="off"
-                                                :invalid="!!accountForm.errors.last_name"
-                                            />
-                                            <label for="accLastName">Last Name *</label>
-                                        </FloatLabel>
-
-                                        <FloatLabel variant="on">
-                                            <InputText
-                                                id="accSuffix"
-                                                v-model="accountForm.suffix"
-                                                class="w-full"
-                                                autocomplete="off"
-                                            />
-                                            <label for="accSuffix">Suffix</label>
-                                        </FloatLabel>
-                                    </div>
-
-                                    <Divider class="!my-5" />
-
-                                    <div class="grid grid-cols-1 gap-5">
-                                        <FloatLabel variant="on">
-                                            <InputText
-                                                id="accEmail"
-                                                v-model="accountForm.email"
-                                                type="email"
-                                                class="w-full"
-                                                autocomplete="off"
-                                                :invalid="!!accountForm.errors.email"
-                                            />
-                                            <label for="accEmail">Email *</label>
-                                        </FloatLabel>
-                                        <small v-if="accountForm.errors.email" class="text-red-500 -mt-4">{{ accountForm.errors.email }}</small>
-                                    </div>
-
-                                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-5 mt-5">
-                                        <FloatLabel variant="on">
-                                            <Password
-                                                id="accPassword"
-                                                v-model="accountForm.password"
-                                                toggleMask
-                                                :feedback="true"
-                                                inputClass="w-full"
-                                                class="w-full"
-                                                autocomplete="new-password"
-                                                :invalid="!!accountForm.errors.password"
-                                            />
-                                            <label for="accPassword">New Password</label>
-                                        </FloatLabel>
-
-                                        <FloatLabel variant="on">
-                                            <Password
-                                                id="accPasswordConfirm"
-                                                v-model="accountForm.password_confirmation"
-                                                toggleMask
-                                                :feedback="false"
-                                                inputClass="w-full"
-                                                class="w-full"
-                                                autocomplete="new-password"
-                                                :invalid="!!accountForm.errors.password"
-                                            />
-                                            <label for="accPasswordConfirm">Confirm New Password</label>
-                                        </FloatLabel>
-                                    </div>
-                                    <PasswordRequirementsChecklist
-                                        :password="accountForm.password"
-                                        :policy="passwordPolicy"
-                                        :is-dark="isDark"
-                                    />
-                                    <small v-if="accountForm.errors.password" class="text-red-500">{{ accountForm.errors.password }}</small>
-                                    <p class="text-xs text-slate-400 mt-1">Leave blank to keep your current password.</p>
-
-                                    <div class="flex justify-end mt-6">
-                                        <Button
-                                            type="submit"
-                                            label="Save Changes"
-                                            icon="pi pi-check"
-                                            :loading="accountForm.processing"
-                                        />
-                                    </div>
-                                </form>
-                            </template>
-                        </Card>
+                        <div class="pt-2">
+                            <AccountForm
+                                :form="accountForm"
+                                :avatar-url="accountAvatarUrl"
+                                :initials="accountInitials"
+                                :password-policy="passwordPolicy"
+                                :is-dark="isDark"
+                                @photo-selected="onPhotoSelected"
+                                @remove-photo="onRemovePhoto"
+                                @submit="onUpdateAccount"
+                            />
                         </div>
                     </TabPanel>
                 </TabPanels>
@@ -796,6 +905,10 @@ const onUpdateAccount = () => {
                     </FloatLabel>
                 </div>
                 <small v-if="form.errors.role" class="text-red-500">{{ form.errors.role }}</small>
+                <small class="block text-slate-500 mt-1">
+                    Already a faculty member? Assign this role from the Faculty page instead. Use this form only for
+                    people who are not on the Faculty roster.
+                </small>
 
                 <Divider class="!my-5" />
 
@@ -1357,6 +1470,159 @@ const onUpdateAccount = () => {
 .dark-scope :deep(.p-tablist) { background: transparent !important; border-color: rgba(255, 255, 255, 0.1) !important; }
 .dark-scope :deep(.p-tab) { color: #94A3B8 !important; }
 .dark-scope :deep(.p-tab-active) { color: #F8FAFC !important; }
+
+/* ------------------------------------------------------------------ */
+/* Roster header: role bar + filter chips                              */
+/* ------------------------------------------------------------------ */
+.roster-head {
+    display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between;
+    gap: 0.75rem 1.5rem; padding: 1.5rem 1.5rem 1rem;
+}
+.roster-total { font-size: 0.9rem; }
+.roster-total-num { font-size: 1.5rem; font-weight: 700; margin-right: 0.15rem; color: #1E293B; }
+.roster-total-active { font-weight: 600; color: #047857; }
+.dark-scope .roster-total-num { color: #F8FAFC; }
+.dark-scope .roster-total-active { color: #34D399; }
+.roster-body { padding: 0 1.5rem 1.35rem; }
+.roster-bar { display: flex; gap: 3px; height: 0.5rem; border-radius: 9999px; overflow: hidden; }
+.roster-seg { min-width: 0.75rem; border-radius: 9999px; }
+.roster-chips { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.9rem; }
+.roster-chip {
+    display: inline-flex; align-items: center; gap: 0.45rem;
+    padding: 0.35rem 0.8rem; border-radius: 9999px;
+    font-size: 0.8rem; font-weight: 600; cursor: pointer;
+    --chip-on: #fff;
+    color: color-mix(in srgb, var(--chip) 55%, #000);
+    background: color-mix(in srgb, var(--chip) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--chip) 30%, transparent);
+    transition: background-color .15s, color .15s, border-color .15s;
+}
+.roster-chip b { font-weight: 700; padding-left: 0.35rem; border-left: 1px solid color-mix(in srgb, currentColor 30%, transparent); }
+.roster-chip:hover { background: color-mix(in srgb, var(--chip) 18%, transparent); }
+.roster-chip.is-on { background: var(--chip); border-color: var(--chip); color: var(--chip-on); }
+.roster-chip:focus-visible { outline: 2px solid var(--chip); outline-offset: 2px; }
+.roster-dot { width: 0.6rem; height: 0.6rem; border-radius: 9999px; background: var(--chip); box-shadow: 0 0 0 1px color-mix(in srgb, var(--chip) 50%, #000 20%); }
+.roster-chip.is-on .roster-dot { background: var(--chip-on); }
+
+.role-select {
+    height: 2.5rem; padding: 0 0.75rem; border-radius: 0.75rem; cursor: pointer;
+    font-size: 0.85rem; font-weight: 500; color: #334155;
+    background: rgba(100, 116, 139, 0.1); border: 1px solid transparent;
+}
+.role-select:focus-visible { outline: 2px solid #4f46e5; outline-offset: 1px; }
+.dark-scope .role-select { color: #E2E8F0; background: rgba(255, 255, 255, 0.08); }
+.dark-scope .role-select option { color: #0F172A; }
+
+/* Cards / Table toggle */
+.view-toggle { display: inline-flex; padding: 3px; border-radius: 0.75rem; background: rgba(100, 116, 139, 0.12); }
+.view-toggle button {
+    display: inline-flex; align-items: center; gap: 0.4rem;
+    padding: 0.4rem 0.75rem; border-radius: 0.55rem; border: 0; background: transparent; cursor: pointer;
+    font-size: 0.8rem; font-weight: 600; color: #475569; transition: background-color .15s, color .15s;
+}
+.view-toggle button.is-on { background: #fff; color: #1E293B; box-shadow: 0 1px 3px rgba(15, 23, 42, 0.18); }
+.view-toggle button:focus-visible { outline: 2px solid #4f46e5; outline-offset: 1px; }
+.dark-scope .view-toggle { background: rgba(255, 255, 255, 0.08); }
+.dark-scope .view-toggle button { color: #94A3B8; }
+.dark-scope .view-toggle button.is-on { background: rgba(255, 255, 255, 0.16); color: #F8FAFC; box-shadow: none; }
+@media (max-width: 640px) { .view-toggle button span { display: none; } }
+
+/* ------------------------------------------------------------------ */
+/* ID cards — one per account. The band carries the role colour and a  */
+/* lanyard slot; the avatar straddles the band edge like a badge photo. */
+/* ------------------------------------------------------------------ */
+.id-grid { display: grid; gap: 1.25rem; grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr)); }
+.id-card {
+    --role: #475569;
+    position: relative; display: flex; flex-direction: column;
+    border-radius: 1rem; overflow: hidden;
+    background: #fff;
+    border: 1px solid rgba(100, 116, 139, 0.22);
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+}
+.id-card:focus-within { border-color: var(--role); }
+.id-band {
+    position: relative; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+    height: 4.5rem; padding: 1.3rem 1rem 0; align-items: flex-start;
+    background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.14), transparent 70%),
+        var(--role);
+    color: var(--on, #fff);
+}
+.id-slot {
+    position: absolute; top: 0.5rem; left: 50%; transform: translateX(-50%);
+    width: 2.6rem; height: 0.5rem; border-radius: 9999px;
+    background: color-mix(in srgb, var(--role) 55%, #000);
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+.id-role { font-size: 0.85rem; font-weight: 700; letter-spacing: 0.01em; }
+.id-faculty {
+    display: inline-flex; align-items: center; gap: 0.3rem;
+    padding: 0.15rem 0.55rem; border-radius: 9999px;
+    font-size: 0.7rem; font-weight: 600;
+    background: color-mix(in srgb, var(--on, #fff) 22%, transparent);
+}
+.id-avatar {
+    position: relative; z-index: 1;
+    display: flex; align-items: center; justify-content: center;
+    width: 3.75rem; height: 3.75rem; margin: -1.5rem 0 0 1rem;
+    border-radius: 9999px;
+    font-size: 1.15rem; font-weight: 700; color: color-mix(in srgb, var(--role) 60%, #000);
+    overflow: hidden;
+    background: color-mix(in srgb, var(--role) 12%, #fff);
+    border: 3px solid #fff;
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--role) 35%, transparent);
+}
+.id-avatar-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.id-main { padding: 0.65rem 1rem 0; min-height: 4.6rem; }
+.id-name { font-size: 1.05rem; font-weight: 700; line-height: 1.25; color: #1E293B; overflow-wrap: anywhere; }
+.id-college { margin-top: 0.2rem; font-size: 0.85rem; font-weight: 500; color: #334155; }
+.id-dept { font-size: 0.8rem; color: #64748B; }
+.id-email {
+    display: flex; align-items: center; gap: 0.5rem; text-align: left;
+    margin: 0.85rem 1rem 0.9rem; padding: 0.5rem 0.65rem; border-radius: 0.6rem;
+    font-size: 0.8rem; color: #334155; cursor: pointer;
+    background: rgba(100, 116, 139, 0.08);
+    border: 1px dashed rgba(100, 116, 139, 0.35);
+    transition: border-color .15s, background-color .15s;
+}
+.id-email span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.id-email .pi { font-size: 0.8rem; color: #64748B; }
+.id-email-copy { opacity: 0; transition: opacity .15s; }
+.id-email:hover, .id-email:focus-visible { border-color: var(--role); background: color-mix(in srgb, var(--role) 8%, transparent); outline: none; }
+.id-email:hover .id-email-copy, .id-email:focus-visible .id-email-copy { opacity: 1; }
+.id-foot {
+    display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+    padding: 0.7rem 0.6rem 0.7rem 1rem;
+    border-top: 1px solid rgba(100, 116, 139, 0.18);
+    margin-top: auto;
+}
+.id-status { display: flex; flex-direction: column; gap: 0.2rem; min-width: 0; }
+.id-state { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; font-weight: 600; }
+.id-state i { width: 0.55rem; height: 0.55rem; border-radius: 9999px; background: currentColor; }
+.id-state.is-active { color: #047857; }
+.id-state.is-off { color: #64748B; }
+.id-pw { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.72rem; font-weight: 600; color: #b45309; }
+.id-actions { display: flex; align-items: center; flex-shrink: 0; }
+.id-card.is-inactive .id-band { filter: grayscale(0.85); opacity: 0.8; }
+.id-card.is-inactive .id-avatar { filter: grayscale(0.85); }
+.id-card.is-inactive .id-name { color: #64748B; }
+.id-empty { padding: 3rem 1rem; text-align: center; color: #64748B; }
+
+.dark-scope .id-card { background: rgba(255, 255, 255, 0.05); border-color: rgba(255, 255, 255, 0.12); box-shadow: none; }
+.dark-scope .id-avatar { background: color-mix(in srgb, var(--role) 30%, #0F1730); color: #fff; border-color: #17213f; }
+.dark-scope .roster-chip:not(.is-on) { color: color-mix(in srgb, var(--chip) 40%, #fff); }
+.dark-scope .id-name { color: #F8FAFC; }
+.dark-scope .id-college { color: #CBD5E1; }
+.dark-scope .id-dept { color: #94A3B8; }
+.dark-scope .id-email { color: #CBD5E1; background: rgba(255, 255, 255, 0.05); border-color: rgba(255, 255, 255, 0.2); }
+.dark-scope .id-email .pi { color: #94A3B8; }
+.dark-scope .id-foot { border-top-color: rgba(255, 255, 255, 0.1); }
+.dark-scope .id-state.is-active { color: #34D399; }
+.dark-scope .id-state.is-off { color: #94A3B8; }
+.dark-scope .id-pw { color: #FBBF24; }
+.dark-scope .id-card.is-inactive .id-name { color: #94A3B8; }
+.dark-scope .id-empty { color: #94A3B8; }
 
 /* The TabPanels wrapper paints its own opaque white background + padding
    by default — that was hiding the glass Card sitting inside it. Strip

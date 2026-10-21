@@ -3,6 +3,7 @@ import { Head, useForm, usePage, router } from '@inertiajs/vue3';
 import { computed, ref, watch } from 'vue';
 import { useToast } from 'primevue/usetoast';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import PageHeader from '@/Components/PageHeader.vue';
 import Card from 'primevue/card';
 import InputText from 'primevue/inputtext';
 import InputNumber from 'primevue/inputnumber';
@@ -25,7 +26,9 @@ import Message from 'primevue/message';
 import DatePicker from 'primevue/datepicker';
 import InfoPopover from '@/Components/InfoPopover.vue';
 import PasswordRequirementsChecklist from '@/Components/PasswordRequirementsChecklist.vue';
+import AccountForm from '@/Components/Account/AccountForm.vue';
 import { useTheme } from '@/composables/useTheme';
+import { collegeSoftStyle } from '@/composables/useCollegeColors';
 
 const { theme } = useTheme();
 const isDark = computed(() => theme.value === 'dark');
@@ -70,6 +73,8 @@ const props = defineProps({
     passwordPolicy: { type: Object, default: null },
     activeSessions: { type: Array, default: () => [] },
     activityLog: { type: Object, default: () => ({}) },
+    colleges: { type: Array, default: () => [] },
+    collegeColorPalette: { type: Array, default: () => [] },
 });
 
 const toast = useToast();
@@ -169,6 +174,42 @@ const workloadForm = useForm({
 });
 const saveWorkload = () => {
     workloadForm.transform((data) => ({ ...data, _method: 'put' })).post(route('settings.workload.update'), { preserveScroll: true, onError });
+};
+
+/* ------------------------------------------------------------------ */
+/* College Colors                                                      */
+/* ------------------------------------------------------------------ */
+// One color per College. Room Grid / Section Grid color their blocks by the
+// College that owns the Section, so a newly added College just needs a color
+// picked here (it is also auto-assigned the next free palette color on create).
+const collegeColorsForm = useForm({
+    colors: props.colleges.map((college) => ({ id: college.id, color: college.color })),
+});
+const collegeColorFor = (id) => collegeColorsForm.colors.find((entry) => entry.id === id);
+const setCollegeColor = (id, hex) => {
+    const entry = collegeColorFor(id);
+    if (entry) entry.color = String(hex).toUpperCase();
+};
+// Free-typed hex: only accept a complete #RRGGBB so a half-typed value never
+// reaches the preview/save.
+const onHexInput = (id, event) => {
+    let value = event.target.value.trim();
+    if (value && !value.startsWith('#')) value = `#${value}`;
+    if (/^#[0-9a-fA-F]{6}$/.test(value)) setCollegeColor(id, value);
+};
+const collegeColorsDirty = computed(() => props.colleges.some((college) => collegeColorFor(college.id)?.color !== college.color));
+// Two colleges sharing a color is allowed, but flagged so it's a conscious choice.
+const duplicateColorIds = computed(() => {
+    const seen = {};
+    collegeColorsForm.colors.forEach((entry) => { (seen[entry.color.toUpperCase()] ??= []).push(entry.id); });
+    return new Set(Object.values(seen).filter((ids) => ids.length > 1).flat());
+});
+const saveCollegeColors = () => {
+    collegeColorsForm.transform((data) => ({ ...data, _method: 'put' })).post(route('settings.college-colors.update'), {
+        preserveScroll: true,
+        onError,
+        onSuccess: () => collegeColorsForm.defaults({ colors: collegeColorsForm.colors.map((entry) => ({ ...entry })) }),
+    });
 };
 
 
@@ -297,27 +338,8 @@ const onUpdateAccount = () => {
 
         <div class="max-w-6xl mx-auto w-full neu-form" :class="isDark ? 'dark-scope' : ''">
             <!-- Page Title -->
-            <div class="neu-card neu-spotlight relative mb-6 overflow-hidden rounded-2xl">
-                <div class="pointer-events-none absolute inset-0 overflow-hidden rounded-2xl">
-                    <!-- These blobs were hardcoded to light-mode colors
-                    (blue-50/red-50) regardless of theme, while the
-                    heading/paragraph text below picked up dark mode's
-                    white/light-gray from global dark-scope styling —
-                    pairing light-on-light backgrounds with near-white
-                    text is what made this header unreadable in dark
-                    mode specifically. Faculty Master's header (and
-                    every other page header) already branches these on
-                    isDark; this one just hadn't been updated to match. -->
-                    <div class="absolute inset-0 bg-gradient-to-br" :class="isDark ? 'from-blue-500/10 via-transparent to-red-500/10' : 'from-blue-50 via-transparent to-red-50/60'"></div>
-                    <div class="absolute -right-10 -top-16 h-44 w-44 rounded-full bg-gradient-to-br" :class="isDark ? 'from-blue-500/20 via-blue-500/5 to-transparent' : 'from-blue-200/80 via-blue-100/40 to-transparent'"></div>
-                    <div class="absolute -bottom-20 right-16 h-40 w-40 rounded-full bg-gradient-to-tr" :class="isDark ? 'from-red-500/20 via-red-500/5 to-transparent' : 'from-red-200/70 via-red-100/30 to-transparent'"></div>
-                    <div class="absolute -left-10 bottom-0 h-28 w-28 rounded-full bg-gradient-to-tr border-4" :class="isDark ? 'from-blue-500/10 to-transparent border-blue-400/10' : 'from-blue-100/60 to-transparent border-blue-100'"></div>
-                    <div class="absolute left-[38%] top-0 h-3 w-3 rounded-full bg-gradient-to-br" :class="isDark ? 'from-red-400/50 to-blue-400/30' : 'from-red-400/80 to-blue-300/60'"></div>
-                    <div class="absolute left-[55%] bottom-4 h-20 w-20 rounded-full bg-gradient-to-r blur-xl" :class="isDark ? 'from-blue-500/10 to-red-500/10' : 'from-blue-200/40 to-red-200/40'"></div>
-                </div>
-                <div class="relative rounded-2xl p-6 transition-colors duration-300">
-                <h1 class="text-2xl font-bold tracking-tight flex items-center gap-2" :class="isDark ? 'text-white' : 'text-[#1E293B]'">
-                    Settings
+            <PageHeader title="Settings" subtitle="System-wide configuration. Faculty, Rooms, Subjects, Sections, Programs, Colleges and the Curriculum keep their own dedicated pages — Settings only controls how the system behaves." icon="pi pi-cog" tone="teal">
+                <template #info>
                     <InfoPopover
                         title="Settings"
                         :paragraphs="[
@@ -328,19 +350,15 @@ const onUpdateAccount = () => {
                             'Changing these settings affects future scheduling; it does not retroactively change schedules already saved.',
                         ]"
                     />
-                </h1>
-                <p class="mt-1 max-w-3xl" :class="isDark ? 'text-slate-400' : 'text-slate-500'">
-                    System-wide configuration. Faculty, Rooms, Subjects, Sections, Programs, Colleges and the
-                    Curriculum keep their own dedicated pages — Settings only controls how the system behaves.
-                </p>
-                </div>
-            </div>
+                </template>
+            </PageHeader>
 
             <Tabs v-model:value="activeTab">
                 <TabList>
                     <Tab v-if="has('general')" value="general">General</Tab>
                     <Tab v-if="has('academic')" value="academic">Academic</Tab>
                     <Tab v-if="has('workload')" value="workload">Faculty &amp; Workload</Tab>
+                    <Tab v-if="has('collegeColors')" value="collegeColors">College Colors</Tab>
                     <Tab v-if="has('system') && isAdministrator" value="activeSessions">Active Sessions</Tab>
                     <Tab v-if="has('activityLog')" value="activityLog">Activity Log</Tab>
                     <Tab v-if="has('system')" value="system">System</Tab>
@@ -513,12 +531,12 @@ const onUpdateAccount = () => {
                             <div class="px-6 pb-6 pt-5">
                                 <fieldset :disabled="!canEdit('workload')" class="grid grid-cols-1 sm:grid-cols-4 gap-5">
                                     <FloatLabel variant="on">
-                                        <!-- Capped at 45 to match FacultyLoadRequest::HARD_CAP_UNITS
+                                        <!-- Capped at 50 to match FacultyLoadRequest::HARD_CAP_UNITS
                                              (the institution-wide hard ceiling enforced server-side on
                                              every overload request) — never raise this without also
                                              raising HARD_CAP_UNITS, or the form will accept a value the
                                              backend will just reject/clamp anyway. -->
-                                        <InputNumber id="maxLoad" size="large" v-model="workloadForm.max_teaching_load" class="w-full" :min="1" :max="45" />
+                                        <InputNumber id="maxLoad" size="large" v-model="workloadForm.max_teaching_load" class="w-full" :min="1" :max="50" />
                                         <label for="maxLoad">Max Teaching Load (units/hrs)</label>
                                     </FloatLabel>
                                     <FloatLabel variant="on">
@@ -539,12 +557,98 @@ const onUpdateAccount = () => {
 
                                 <div class="flex items-center gap-3 mt-5">
                                     <ToggleSwitch v-model="workloadForm.allow_admin_override" :disabled="!canEdit('workload')" />
-                                    <span>Allow Administrator, Registrar, Dean, OIC and Assistant Dean to go above the maximum load (up to 45 units)</span>
+                                    <span>Allow Administrator, Registrar, Dean, OIC and Assistant Dean to go above the maximum load (up to 50 units)</span>
                                     <Tag severity="danger" value="HARD CONSTRAINT unless overridden" class="!text-[10px]" />
                                 </div>
 
                                 <div v-if="canEdit('workload')" class="flex justify-end mt-6">
                                     <Button label="Save Changes" icon="pi pi-check" :loading="workloadForm.processing" @click="saveWorkload" />
+                                </div>
+                            </div>
+                        </div>
+                    </TabPanel>
+
+                    <!-- COLLEGE COLORS — one color per College; Room Grid and Section
+                         Grid blocks use the color of the College that owns the Section. -->
+                    <TabPanel v-if="has('collegeColors')" value="collegeColors">
+                        <div class="overflow-hidden rounded-2xl border transition-colors duration-300" :class="panelTone('amber').border">
+                            <div class="flex items-start justify-between gap-4 px-6 py-5" :class="panelTone('amber').band">
+                                <div class="flex items-start gap-3">
+                                    <span class="flex h-11 w-11 flex-none items-center justify-center rounded-xl text-lg text-white shadow-sm" :class="panelTone('amber').icon">
+                                        <i class="pi pi-palette"></i>
+                                    </span>
+                                    <div>
+                                        <h2 class="text-lg font-bold" :class="isDark ? 'text-white' : 'text-[#1E293B]'">College Colors</h2>
+                                        <p class="mt-0.5 max-w-3xl text-sm" :class="isDark ? 'text-slate-300' : 'text-slate-600'">Pick a color for each College. Subjects on the Room Grid and Section Grid are colored by the College that owns the Section, so a BSIT subject shows the CCS color. A new College is given a free color automatically and can be changed here at any time.</p>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="px-6 pb-6 pt-5">
+                                <div v-if="!colleges.length" class="text-sm" :class="isDark ? 'text-slate-300' : 'text-slate-500'">No colleges yet. Add a College first, then set its color here.</div>
+
+                                <div v-else class="space-y-4">
+                                    <div
+                                        v-for="college in colleges"
+                                        :key="college.id"
+                                        class="flex flex-col gap-4 rounded-xl border p-4 lg:flex-row lg:items-center"
+                                        :class="isDark ? 'border-white/10 bg-white/5' : 'border-slate-200 bg-white'"
+                                    >
+                                        <!-- Which college -->
+                                        <div class="lg:w-64 shrink-0">
+                                            <p class="font-bold" :class="isDark ? 'text-white' : 'text-[#1E293B]'">{{ college.code }}</p>
+                                            <p class="text-xs" :class="isDark ? 'text-slate-300' : 'text-slate-500'">{{ college.name }}</p>
+                                        </div>
+
+                                        <!-- Color picker + hex + presets -->
+                                        <div class="flex flex-1 flex-wrap items-center gap-3">
+                                            <input
+                                                type="color"
+                                                class="h-10 w-12 cursor-pointer rounded-lg border border-slate-300 bg-transparent p-0.5 disabled:cursor-not-allowed"
+                                                :value="collegeColorFor(college.id)?.color"
+                                                :disabled="!canEdit('collegeColors')"
+                                                :aria-label="`Color for ${college.code}`"
+                                                @input="setCollegeColor(college.id, $event.target.value)"
+                                            />
+                                            <InputText
+                                                class="!w-28 !font-mono !uppercase"
+                                                maxlength="7"
+                                                :model-value="collegeColorFor(college.id)?.color"
+                                                :disabled="!canEdit('collegeColors')"
+                                                @input="onHexInput(college.id, $event)"
+                                            />
+                                            <div v-if="canEdit('collegeColors')" class="flex flex-wrap items-center gap-1.5">
+                                                <button
+                                                    v-for="swatch in collegeColorPalette"
+                                                    :key="swatch"
+                                                    type="button"
+                                                    class="h-6 w-6 rounded-full border-2 transition-transform hover:scale-110"
+                                                    :class="collegeColorFor(college.id)?.color?.toUpperCase() === swatch ? 'border-slate-800 dark:border-white' : 'border-white/70'"
+                                                    :style="{ backgroundColor: swatch }"
+                                                    :title="swatch"
+                                                    @click="setCollegeColor(college.id, swatch)"
+                                                ></button>
+                                            </div>
+                                        </div>
+
+                                        <!-- Live preview of how a block will look on the grid -->
+                                        <div class="lg:w-56 shrink-0">
+                                            <div
+                                                class="rounded-md border px-2 py-1 text-[13px] leading-tight"
+                                                :style="collegeSoftStyle(collegeColorFor(college.id)?.color, isDark)"
+                                            >
+                                                <div class="truncate text-sm font-semibold">Sample Subject</div>
+                                                <div class="truncate text-xs opacity-90">{{ college.code }} · 8:00 AM–11:00 AM</div>
+                                            </div>
+                                            <small v-if="duplicateColorIds.has(college.id)" class="mt-1 block text-[11px] text-amber-600">Same color as another college.</small>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <small v-if="collegeColorsForm.errors.colors" class="text-red-500 block mt-2">{{ collegeColorsForm.errors.colors }}</small>
+                                <small v-for="(message, key) in collegeColorsForm.errors" :key="key" v-show="key !== 'colors'" class="text-red-500 block mt-2">{{ message }}</small>
+
+                                <div v-if="canEdit('collegeColors') && colleges.length" class="flex justify-end mt-6">
+                                    <Button label="Save Changes" icon="pi pi-check" :disabled="!collegeColorsDirty" :loading="collegeColorsForm.processing" @click="saveCollegeColors" />
                                 </div>
                             </div>
                         </div>
@@ -750,92 +854,16 @@ const onUpdateAccount = () => {
                     </TabPanel>
 
                     <TabPanel value="account">
-                        <div class="overflow-hidden rounded-2xl border transition-colors duration-300 max-w-2xl" :class="panelTone('rose').border">
-                            <div class="flex items-start justify-between gap-4 px-6 py-5" :class="panelTone('rose').band">
-                                <div class="flex items-start gap-3">
-                                    <span class="flex h-11 w-11 flex-none items-center justify-center rounded-xl text-lg text-white shadow-sm" :class="panelTone('rose').icon">
-                                        <i class="pi pi-user"></i>
-                                    </span>
-                                    <div>
-                                        <h2 class="text-lg font-bold" :class="isDark ? 'text-white' : 'text-[#1E293B]'">Manage Account</h2>
-                                        <p class="mt-0.5 max-w-3xl text-sm" :class="isDark ? 'text-slate-300' : 'text-slate-600'">Update your own profile and change your password.</p>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="px-6 pb-6 pt-5">
-                                <form class="pt-1" autocomplete="off" @submit.prevent="onUpdateAccount">
-                                    <div class="flex items-center gap-4 mb-6">
-                                        <div class="relative shrink-0">
-                                            <img v-if="accountAvatarUrl" :src="accountAvatarUrl" class="h-16 w-16 rounded-full object-cover border border-slate-200" alt="Profile photo" />
-                                            <span v-else class="flex h-16 w-16 items-center justify-center rounded-full bg-slate-200 text-lg font-bold text-slate-600">{{ accountInitials }}</span>
-                                        </div>
-                                        <div>
-                                            <input ref="photoInput" type="file" accept="image/*" class="hidden" @change="onPhotoSelected" />
-                                            <div class="flex gap-2">
-                                                <Button type="button" label="Upload Photo" icon="pi pi-camera" size="small" outlined @click="photoInput?.click()" />
-                                                <Button v-if="accountAvatarUrl" type="button" label="Remove" icon="pi pi-trash" size="small" text severity="danger" @click="onRemovePhoto" />
-                                            </div>
-                                            <p class="text-xs text-slate-400 mt-1">JPG or PNG, up to 2MB.</p>
-                                            <small v-if="accountForm.errors.photo" class="text-red-500 block">{{ accountForm.errors.photo }}</small>
-                                        </div>
-                                    </div>
-
-                                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-5">
-                                        <FloatLabel variant="on">
-                                            <InputText v-uppercase id="accFirstName" size="large" v-model="accountForm.first_name" class="w-full" autocomplete="off" :invalid="!!accountForm.errors.first_name" />
-                                            <label for="accFirstName">First Name *</label>
-                                        </FloatLabel>
-                                        <FloatLabel variant="on">
-                                            <InputText v-uppercase id="accMiddleName" size="large" v-model="accountForm.middle_name" class="w-full" autocomplete="off" />
-                                            <label for="accMiddleName">Middle Name</label>
-                                        </FloatLabel>
-                                    </div>
-
-                                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-5 mt-5">
-                                        <FloatLabel variant="on">
-                                            <InputText v-uppercase id="accLastName" size="large" v-model="accountForm.last_name" class="w-full" autocomplete="off" :invalid="!!accountForm.errors.last_name" />
-                                            <label for="accLastName">Last Name *</label>
-                                        </FloatLabel>
-                                        <FloatLabel variant="on">
-                                            <InputText v-uppercase id="accSuffix" size="large" v-model="accountForm.suffix" class="w-full" autocomplete="off" />
-                                            <label for="accSuffix">Suffix</label>
-                                        </FloatLabel>
-                                    </div>
-
-                                    <Divider class="!my-5" />
-
-                                    <div class="grid grid-cols-1 gap-5">
-                                        <FloatLabel variant="on">
-                                            <InputText id="accEmail" size="large" v-model="accountForm.email" type="email" class="w-full" autocomplete="off" :invalid="!!accountForm.errors.email" />
-                                            <label for="accEmail">Email *</label>
-                                        </FloatLabel>
-                                        <small v-if="accountForm.errors.email" class="text-red-500 -mt-4">{{ accountForm.errors.email }}</small>
-                                    </div>
-
-                                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-5 mt-5">
-                                        <FloatLabel variant="on">
-                                            <Password id="accPassword" size="large" v-model="accountForm.password" toggleMask :feedback="true" inputClass="w-full" class="w-full" autocomplete="new-password" :invalid="!!accountForm.errors.password" />
-                                            <label for="accPassword">New Password</label>
-                                        </FloatLabel>
-                                        <FloatLabel variant="on">
-                                            <Password id="accPasswordConfirm" size="large" v-model="accountForm.password_confirmation" toggleMask :feedback="false" inputClass="w-full" class="w-full" autocomplete="new-password" :invalid="!!accountForm.errors.password" />
-                                            <label for="accPasswordConfirm">Confirm New Password</label>
-                                        </FloatLabel>
-                                    </div>
-                                    <PasswordRequirementsChecklist
-                                        :password="accountForm.password"
-                                        :policy="passwordPolicy"
-                                        :is-dark="isDark"
-                                    />
-                                    <small v-if="accountForm.errors.password" class="text-red-500">{{ accountForm.errors.password }}</small>
-                                    <p class="text-xs text-slate-400 mt-1">Leave blank to keep your current password.</p>
-
-                                    <div class="flex justify-end mt-6">
-                                        <Button type="submit" label="Save Changes" icon="pi pi-check" :loading="accountForm.processing" />
-                                    </div>
-                                </form>
-                            </div>
-                        </div>
+                        <AccountForm
+                            :form="accountForm"
+                            :avatar-url="accountAvatarUrl"
+                            :initials="accountInitials"
+                            :password-policy="passwordPolicy"
+                            :is-dark="isDark"
+                            @photo-selected="onPhotoSelected"
+                            @remove-photo="onRemovePhoto"
+                            @submit="onUpdateAccount"
+                        />
                     </TabPanel>
                 </TabPanels>
             </Tabs>

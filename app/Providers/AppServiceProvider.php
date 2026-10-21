@@ -18,6 +18,7 @@ use App\Policies\SubjectPolicy;
 use App\Policies\UserPolicy;
 use App\Support\AccessScope;
 use App\Support\ScheduleCache;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Queue\Events\JobFailed;
 use Illuminate\Queue\Events\JobProcessed;
@@ -54,6 +55,15 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        // PERFORMANCE (N+1) — automatic eager loading. When code touches
+        // a relationship that was not eager-loaded on a model that came
+        // out of a multi-row query, Eloquent loads that relationship for
+        // EVERY model in the same collection with one query, instead of
+        // one query per model. Existing `with()` calls are unaffected;
+        // this is a safety net for anything that slips through (e.g. the
+        // computed `faculty_mismatch` attribute on SectionSubject).
+        Model::automaticallyEagerLoadRelationships();
+
         foreach ($this->policies as $model => $policy) {
             Gate::policy($model, $policy);
         }

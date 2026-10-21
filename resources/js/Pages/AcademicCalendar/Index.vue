@@ -4,15 +4,13 @@ import { ref, computed, watch } from 'vue';
 import Swal from 'sweetalert2';
 import { useToast } from 'primevue/usetoast';
 import AppLayout from '@/Layouts/AppLayout.vue';
-import Card from 'primevue/card';
-import Toolbar from 'primevue/toolbar';
+import PageHeader from '@/Components/PageHeader.vue';
 import InputText from 'primevue/inputtext';
 import InputNumber from 'primevue/inputnumber';
 import Button from 'primevue/button';
-import DataTable from 'primevue/datatable';
-import Column from 'primevue/column';
-import Tag from 'primevue/tag';
 import Dialog from 'primevue/dialog';
+import Paginator from 'primevue/paginator';
+import Tag from 'primevue/tag';
 import Select from 'primevue/select';
 import FloatLabel from 'primevue/floatlabel';
 import Toast from 'primevue/toast';
@@ -103,6 +101,97 @@ const buildTimeOptions = (startHour, endHour) => {
 };
 
 const classTimeOptions = buildTimeOptions(5, 21);
+
+/* ------------------------------------------------------------------ */
+/* Term Setup display helpers                                           */
+/* ------------------------------------------------------------------ */
+
+const DAY_ORDER = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+// The class-hours strip spans 5:00 AM – 9:00 PM, the same range as the
+// Class Start/End Time dropdowns, so a bar's position is comparable
+// between terms.
+const hourTicks = ['5 AM', '9 AM', '1 PM', '5 PM', '9 PM'];
+const STRIP_START_MIN = 5 * 60;
+const STRIP_SPAN_MIN = 16 * 60;
+
+const toMinutes = (time) => {
+    if (!time) return null;
+    const [hour, minute] = time.split(':').map(Number);
+    return hour * 60 + minute;
+};
+
+const windowBar = (schoolYear) => {
+    const start = toMinutes(schoolYear?.class_start_time);
+    const end = toMinutes(schoolYear?.class_end_time);
+    if (start === null || end === null) return { left: '0%', width: '0%' };
+
+    const clamp = (value) => Math.max(0, Math.min(100, value));
+    const left = clamp(((start - STRIP_START_MIN) / STRIP_SPAN_MIN) * 100);
+    const right = clamp(((end - STRIP_START_MIN) / STRIP_SPAN_MIN) * 100);
+
+    return { left: `${left}%`, width: `${Math.max(right - left, 2)}%` };
+};
+
+const dayChipTones = {
+    emerald: ['bg-emerald-200/70 text-emerald-800', 'bg-emerald-500/20 text-emerald-200'],
+    yellow: ['bg-yellow-200/80 text-yellow-900', 'bg-yellow-500/20 text-yellow-200'],
+    slate: ['bg-slate-200 text-slate-700', 'bg-white/10 text-slate-300'],
+    red: ['bg-red-100 text-red-700', 'bg-red-500/20 text-red-200'],
+};
+
+const dayChipClass = (enabled, tone = 'slate') => {
+    if (enabled) {
+        return (dayChipTones[tone] ?? dayChipTones.slate)[isDark.value ? 1 : 0];
+    }
+    return isDark.value ? 'bg-white/5 text-slate-600 line-through' : 'bg-white/70 text-slate-400 line-through';
+};
+
+// Row colors by status: Active = green, Inactive (planning / not yet
+// started or closed out) = yellow, Archived = grey, Deleted = red.
+const statusTheme = (term) => {
+    const d = isDark.value;
+    if (term.deleted_at) {
+        return {
+            label: 'Deleted', tone: 'red',
+            edge: 'border-l-red-500',
+            card: d ? 'bg-red-500/10 ring-1 ring-red-500/30' : 'bg-red-50 ring-1 ring-red-200',
+            pill: d ? 'bg-red-500/20 text-red-300' : 'bg-red-100 text-red-700',
+            bar: 'bg-red-400',
+        };
+    }
+    if (term.status === 'Active') {
+        return {
+            label: 'Active', tone: 'emerald',
+            edge: 'border-l-emerald-500',
+            card: d ? 'bg-emerald-500/10 ring-1 ring-emerald-500/30' : 'bg-emerald-50 ring-1 ring-emerald-200',
+            pill: d ? 'bg-emerald-500/20 text-emerald-300' : 'bg-emerald-200/70 text-emerald-800',
+            bar: 'bg-emerald-500',
+        };
+    }
+    if (term.status === 'Archived') {
+        return {
+            label: 'Archived', tone: 'slate',
+            edge: d ? 'border-l-slate-500' : 'border-l-slate-400',
+            card: d ? 'bg-white/5 ring-1 ring-white/10' : 'bg-slate-100 ring-1 ring-slate-200',
+            pill: d ? 'bg-white/10 text-slate-300' : 'bg-slate-200 text-slate-700',
+            bar: 'bg-slate-400',
+        };
+    }
+    return {
+        label: term.status, tone: 'yellow',
+        edge: 'border-l-yellow-400',
+        card: d ? 'bg-yellow-500/10 ring-1 ring-yellow-500/30' : 'bg-yellow-50 ring-1 ring-yellow-200',
+        pill: d ? 'bg-yellow-500/20 text-yellow-300' : 'bg-yellow-200/80 text-yellow-900',
+        bar: 'bg-yellow-500',
+    };
+};
+
+// The Active term shown in the "Current term" card. Looked up in the
+// rows already loaded for this page (newest first), so no extra request.
+const activeTerm = computed(
+    () => props.academicTerms.data.find((term) => term.status === 'Active' && !term.deleted_at) ?? null,
+);
 
 const toast = useToast();
 const page = usePage();
@@ -491,20 +580,10 @@ const helpPopover = ref(null);
             <span class="text-lg font-semibold" :class="isDark ? 'text-white' : 'text-[#1E293B]'">Term Setup</span>
         </template>
 
-        <div class="max-w-7xl mx-auto w-full">
+        <div class="w-full">
             <!-- Page Title -->
-            <div class="neu-card neu-spotlight relative mb-6 overflow-hidden rounded-2xl">
-                <div class="pointer-events-none absolute inset-0 overflow-hidden rounded-2xl">
-                    <div class="absolute inset-0" :class="isDark ? 'bg-gradient-to-br from-blue-500/10 via-transparent to-red-500/10' : 'bg-gradient-to-br from-blue-50 via-transparent to-red-50/60'"></div>
-                    <div class="absolute -right-10 -top-16 h-44 w-44 rounded-full bg-gradient-to-br" :class="isDark ? 'from-blue-500/20 via-blue-500/5 to-transparent' : 'from-blue-200/80 via-blue-100/40 to-transparent'"></div>
-                    <div class="absolute -bottom-20 right-16 h-40 w-40 rounded-full bg-gradient-to-tr" :class="isDark ? 'from-red-500/20 via-red-500/5 to-transparent' : 'from-red-200/70 via-red-100/30 to-transparent'"></div>
-                    <div class="absolute -left-10 bottom-0 h-28 w-28 rounded-full bg-gradient-to-tr border-4" :class="isDark ? 'from-blue-500/10 to-transparent border-blue-400/10' : 'from-blue-100/60 to-transparent border-blue-100'"></div>
-                    <div class="absolute left-[38%] top-0 h-3 w-3 rounded-full bg-gradient-to-br" :class="isDark ? 'from-red-400/50 to-blue-400/30' : 'from-red-400/80 to-blue-300/60'"></div>
-                    <div class="absolute left-[55%] bottom-4 h-20 w-20 rounded-full bg-gradient-to-r blur-xl" :class="isDark ? 'from-blue-500/10 to-red-500/10' : 'from-blue-200/40 to-red-200/40'"></div>
-                </div>
-                <div class="relative rounded-2xl p-6 transition-colors duration-300">
-                <h1 class="text-2xl font-bold tracking-tight flex items-center gap-2" :class="isDark ? 'text-white' : 'text-[#1E293B]'">
-                    Term Setup
+            <PageHeader title="Term Setup" subtitle="Manage academic terms — School Year, Semester, and Scheduling Preferences all in one place." icon="pi pi-calendar" tone="teal">
+                <template #info>
                     <InfoPopover
                         title="Term Setup"
                         :paragraphs="[
@@ -519,12 +598,8 @@ const helpPopover = ref(null);
                             'Admin/Registrar can unlock a finalized section when corrections are required.',
                         ]"
                     />
-                </h1>
-                <p class="mt-1" :class="isDark ? 'text-slate-400' : 'text-slate-500'">
-                    Manage academic terms — School Year, Semester, and Scheduling Preferences all in one place.
-                </p>
-                </div>
-            </div>
+                </template>
+            </PageHeader>
 
             <Popover ref="helpPopover" :pt="{ root: { class: isDark ? 'dark-scope' : '' } }">
                 <div class="w-80 max-w-[85vw] text-sm text-slate-600 leading-relaxed space-y-2">
@@ -552,184 +627,213 @@ const helpPopover = ref(null);
                 </div>
             </Popover>
 
-            <!-- Term Setup -->
-            <div class="neu-card rounded-2xl transition-colors duration-300">
-                <Card
-                    class="!rounded-2xl !bg-transparent !border-0 !shadow-none"
-                    :pt="{ body: { class: '!bg-transparent' } }"
-                >
-                <template #content>
-                    <!-- Top Toolbar -->
-                    <Toolbar class="!bg-transparent !border-0 !px-0 !pt-0 !pb-4 flex-wrap gap-3">
-                        <template #start>
-                            <span class="relative w-full sm:w-80">
-                                <i class="pi pi-search absolute left-3 top-1/2 -translate-y-1/2 text-sm" :class="isDark ? 'text-slate-500' : 'text-slate-400'"></i>
-                                <InputText
-                                    v-uppercase
-                                    v-model="academicTermSearch"
-                                    placeholder="Search by school year or semester"
-                                    class="neu-inset w-full !rounded-xl !border-none !pl-9"
-                                    :class="isDark ? '!text-white placeholder:!text-slate-500' : ''"
-                                />
+            <!-- Current term -->
+            <section
+                v-if="activeTerm"
+                class="mb-4 rounded-2xl px-5 py-4 ring-1"
+                :class="isDark ? 'bg-emerald-500/10 ring-emerald-500/30' : 'bg-emerald-50 ring-emerald-200'"
+                aria-label="Current term"
+            >
+                <div class="flex flex-wrap items-center gap-x-8 gap-y-3">
+                    <div class="min-w-0">
+                        <span
+                            class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-semibold"
+                            :class="isDark ? 'bg-emerald-500/20 text-emerald-300' : 'bg-emerald-200/70 text-emerald-800'"
+                        >
+                            <span class="term-live-dot h-1.5 w-1.5 rounded-full bg-emerald-500"></span>
+                            Current term
+                        </span>
+                        <h2 class="mt-1 text-2xl font-bold leading-tight tracking-tight" :class="isDark ? 'text-white' : 'text-emerald-950'">
+                            {{ activeTerm.school_year?.name }}
+                            <span class="ml-1 text-base font-medium" :class="isDark ? 'text-emerald-200/80' : 'text-emerald-800/80'">{{ activeTerm.semester?.name }}</span>
+                        </h2>
+                    </div>
+
+                    <div class="min-w-[15rem] flex-1">
+                        <div class="flex items-baseline justify-between gap-3 text-sm">
+                            <span :class="isDark ? 'text-emerald-200/80' : 'text-emerald-800/80'">Class hours</span>
+                            <span class="font-semibold tabular-nums" :class="isDark ? 'text-white' : 'text-emerald-950'">
+                                {{ formatTimeLabel(activeTerm.school_year?.class_start_time?.slice(0, 5)) }} –
+                                {{ formatTimeLabel(activeTerm.school_year?.class_end_time?.slice(0, 5)) }}
                             </span>
-                        </template>
-                        <template #end>
-                            <div class="flex items-center gap-2">
-                                <Button
-                                    icon="pi pi-refresh"
-                                    severity="secondary"
-                                    text
-                                    class="neu-icon-well !rounded-full"
-                                    :loading="academicTermLoading"
-                                    @click="onRefreshAcademicTerms"
-                                    aria-label="Refresh"
-                                />
-                                <Button label="Add Academic Term" icon="pi pi-plus" @click="openAddAcademicTerm" />
-                            </div>
-                        </template>
-                    </Toolbar>
+                        </div>
+                        <div class="relative mt-1.5 h-2.5 overflow-hidden rounded-full" :class="isDark ? 'bg-white/10' : 'bg-white'" role="img"
+                            :aria-label="`Classes run ${formatTimeLabel(activeTerm.school_year?.class_start_time?.slice(0, 5))} to ${formatTimeLabel(activeTerm.school_year?.class_end_time?.slice(0, 5))}`">
+                            <div class="absolute inset-y-0 rounded-full bg-gradient-to-r from-emerald-600 to-emerald-400" :style="windowBar(activeTerm.school_year)"></div>
+                        </div>
+                        <div class="mt-1 flex justify-between text-[11px] tabular-nums" :class="isDark ? 'text-emerald-200/60' : 'text-emerald-800/60'">
+                            <span v-for="tick in hourTicks" :key="tick">{{ tick }}</span>
+                        </div>
+                    </div>
 
-                    <!-- Term Setup Table -->
-                    <DataTable
-                        :value="academicTerms.data"
-                        :loading="academicTermLoading"
-                        dataKey="id"
-                        class="neu-inset rounded-xl overflow-hidden"
-                        :class="isDark ? 'academic-calendar-table-dark' : ''"
-                        stripedRows
-                        responsiveLayout="scroll"
-                        lazy
-                        paginator
-                        :rows="academicTerms.per_page"
-                        :totalRecords="academicTerms.total"
-                        :first="(academicTerms.current_page - 1) * academicTerms.per_page"
-                        @page="onAcademicTermPage"
+                    <div class="flex flex-wrap items-center gap-1.5">
+                        <span
+                            v-for="day in DAY_ORDER"
+                            :key="day"
+                            class="inline-flex h-7 min-w-[2.25rem] items-center justify-center rounded-md px-1.5 text-xs font-medium"
+                            :class="dayChipClass((activeTerm.school_year?.available_days ?? []).includes(day), 'emerald')"
+                            :title="dayLabels[day]"
+                        >{{ day }}</span>
+                    </div>
+
+                    <Button label="Edit" icon="pi pi-pencil" size="small" severity="success" @click="openEditAcademicTerm(activeTerm)" />
+                </div>
+            </section>
+
+            <!-- All terms -->
+            <div class="neu-card rounded-2xl p-4 transition-colors duration-300">
+                <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
+                    <h2 class="text-lg font-semibold" :class="isDark ? 'text-white' : 'text-[#1E293B]'">All terms</h2>
+                    <div class="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+                        <span class="relative w-full sm:w-72">
+                            <i class="pi pi-search absolute left-3 top-1/2 -translate-y-1/2 text-sm" :class="isDark ? 'text-slate-500' : 'text-slate-400'"></i>
+                            <InputText
+                                v-uppercase
+                                v-model="academicTermSearch"
+                                placeholder="Search by school year or semester"
+                                class="neu-inset w-full !rounded-xl !border-none !pl-9"
+                                :class="isDark ? '!text-white placeholder:!text-slate-500' : ''"
+                            />
+                        </span>
+                        <Button
+                            icon="pi pi-refresh"
+                            severity="secondary"
+                            text
+                            class="neu-icon-well !rounded-full"
+                            :loading="academicTermLoading"
+                            @click="onRefreshAcademicTerms"
+                            aria-label="Refresh"
+                        />
+                        <Button label="Add academic term" icon="pi pi-plus" @click="openAddAcademicTerm" />
+                    </div>
+                </div>
+
+                <!-- Empty state -->
+                <div v-if="!academicTerms.data.length" class="py-14 text-center">
+                    <i class="pi pi-calendar-plus text-4xl" :class="isDark ? 'text-slate-600' : 'text-slate-300'"></i>
+                    <p class="mt-3 font-medium" :class="isDark ? 'text-slate-300' : 'text-slate-600'">
+                        {{ academicTermSearch ? 'No terms match your search.' : 'No academic terms yet.' }}
+                    </p>
+                    <p class="mt-1 text-sm" :class="isDark ? 'text-slate-500' : 'text-slate-400'">
+                        {{ academicTermSearch ? 'Try a different school year or semester.' : 'Add a term to set the school year and class hours for scheduling.' }}
+                    </p>
+                    <Button v-if="!academicTermSearch" label="Add academic term" icon="pi pi-plus" class="mt-4" @click="openAddAcademicTerm" />
+                </div>
+
+                <ul v-else class="space-y-2" :class="academicTermLoading ? 'opacity-60 transition-opacity' : ''">
+                    <li
+                        v-for="term in academicTerms.data"
+                        :key="term.id"
+                        class="grid items-center gap-x-4 gap-y-2 rounded-xl border-l-4 px-4 py-2.5 md:grid-cols-[minmax(0,4fr)_minmax(0,6fr)_auto]"
+                        :class="[statusTheme(term).edge, statusTheme(term).card, term.deleted_at ? 'opacity-70' : '']"
                     >
-                        <template #empty>
-                            <div class="text-center py-10">
-                                <p class="font-medium" :class="isDark ? 'text-slate-400' : 'text-slate-500'">No academic terms found.</p>
-                                <Button
-                                    label="Add Academic Term"
-                                    icon="pi pi-plus"
-                                    class="mt-3"
-                                    @click="openAddAcademicTerm"
-                                />
+                        <!-- Term + status -->
+                        <div class="min-w-0">
+                            <div class="flex flex-wrap items-center gap-2">
+                                <span class="text-base font-semibold tabular-nums" :class="isDark ? 'text-white' : 'text-[#1E293B]'">
+                                    {{ term.school_year?.name }}
+                                </span>
+                                <span class="rounded-full px-2.5 py-0.5 text-xs font-semibold" :class="statusTheme(term).pill">
+                                    {{ statusTheme(term).label }}
+                                </span>
                             </div>
-                        </template>
+                            <p class="text-sm" :class="isDark ? 'text-slate-400' : 'text-slate-500'">{{ term.semester?.name }}</p>
 
-                        <Column header="School Year" style="width: 12rem">
-                            <template #body="{ data }">
-                                {{ data.school_year?.name }}
-                            </template>
-                        </Column>
-                        <Column header="Semester" style="width: 14rem">
-                            <template #body="{ data }">
-                                {{ data.semester?.name }}
-                            </template>
-                        </Column>
-                        <Column header="Status" style="width: 10rem">
-                            <template #body="{ data }">
-                                <Tag v-if="data.deleted_at" value="Deleted" severity="danger" />
-                                <Tag
-                                    v-else
-                                    :value="data.status"
-                                    :severity="data.status === 'Active' ? 'success' : (data.status === 'Archived' ? 'warn' : 'secondary')"
-                                />
-                                <button
-                                    v-if="!data.deleted_at && data.status === 'Inactive' && !data.all_sections_finalized"
-                                    type="button"
-                                    class="text-xs mt-1 underline decoration-dotted"
-                                    :class="isDark ? 'text-amber-400' : 'text-amber-600'"
-                                    @click="showUnfinalizedList(data)"
-                                >
-                                    🔒 {{ data.unfinalized_sections_count }} section{{ data.unfinalized_sections_count === 1 ? '' : 's' }} still open
-                                </button>
+                            <button
+                                v-if="!term.deleted_at && term.status === 'Inactive' && !term.all_sections_finalized"
+                                type="button"
+                                class="mt-1 inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-orange-500"
+                                :class="isDark ? 'bg-orange-500/20 text-orange-300' : 'bg-orange-100 text-orange-800'"
+                                @click="showUnfinalizedList(term)"
+                            >
+                                <i class="pi pi-lock text-[10px]"></i>
+                                {{ term.unfinalized_sections_count }} section{{ term.unfinalized_sections_count === 1 ? '' : 's' }} still open
+                            </button>
+                            <span
+                                v-else-if="!term.deleted_at && term.status === 'Inactive' && !term.has_sections"
+                                class="mt-1 inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium"
+                                :class="isDark ? 'bg-orange-500/20 text-orange-300' : 'bg-orange-100 text-orange-800'"
+                                title="Add at least one section under this term before End Semester becomes available."
+                            >
+                                <i class="pi pi-lock text-[10px]"></i>
+                                No sections yet
+                            </span>
+                        </div>
+
+                        <!-- Class hours + days + remarks -->
+                        <div class="min-w-0">
+                            <p class="text-sm font-medium tabular-nums" :class="isDark ? 'text-slate-200' : 'text-slate-700'">
+                                {{ formatTimeLabel(term.school_year?.class_start_time?.slice(0, 5)) }} –
+                                {{ formatTimeLabel(term.school_year?.class_end_time?.slice(0, 5)) }}
+                            </p>
+                            <div class="relative mt-1 h-1.5 overflow-hidden rounded-full" :class="isDark ? 'bg-white/10' : 'bg-white'">
+                                <div class="absolute inset-y-0 rounded-full" :class="statusTheme(term).bar" :style="windowBar(term.school_year)"></div>
+                            </div>
+                            <div class="mt-1.5 flex flex-wrap gap-1">
                                 <span
-                                    v-else-if="!data.deleted_at && data.status === 'Inactive' && !data.has_sections"
-                                    class="block text-xs mt-1"
-                                    :class="isDark ? 'text-amber-400' : 'text-amber-600'"
-                                    title="Add at least one section under this term before End Semester becomes available."
+                                    v-for="day in DAY_ORDER"
+                                    :key="day"
+                                    class="inline-flex h-5 min-w-[1.75rem] items-center justify-center rounded px-1 text-[11px] font-medium"
+                                    :class="dayChipClass((term.school_year?.available_days ?? []).includes(day), statusTheme(term).tone)"
+                                    :title="dayLabels[day]"
                                 >
-                                    🔒 No sections yet
+                                    {{ day }}
                                 </span>
+                            </div>
+                            <p v-if="term.remarks" class="mt-1 truncate text-xs" :class="isDark ? 'text-slate-500' : 'text-slate-400'" :title="term.remarks">
+                                {{ term.remarks }}
+                            </p>
+                        </div>
+
+                        <!-- Actions -->
+                        <div class="flex items-center gap-1 md:justify-end">
+                            <template v-if="!term.deleted_at">
+                                <Button
+                                    v-if="term.status === 'Inactive' && term.all_sections_finalized && term.has_sections"
+                                    label="End semester"
+                                    icon="pi pi-inbox"
+                                    size="small"
+                                    severity="warn"
+                                    outlined
+                                    title="Archive this term"
+                                    @click="onArchiveAcademicTerm(term)"
+                                />
+                                <Button
+                                    v-if="term.status === 'Archived'"
+                                    label="Reopen"
+                                    icon="pi pi-history"
+                                    size="small"
+                                    severity="warn"
+                                    outlined
+                                    title="Undo End Semester — back to Inactive"
+                                    @click="onReopenAcademicTerm(term)"
+                                />
+                                <Button icon="pi pi-pencil" text rounded severity="secondary" size="small" aria-label="Edit term" title="Edit term" @click="openEditAcademicTerm(term)" />
+                                <Button icon="pi pi-trash" text rounded severity="danger" size="small" aria-label="Delete term" title="Delete term" @click="onDeleteAcademicTerm(term)" />
                             </template>
-                        </Column>
-                        <Column header="Scheduling Window" style="width: 16rem">
-                            <template #body="{ data }">
-                                <span class="text-sm" :class="isDark ? 'text-slate-400' : 'text-slate-500'">
-                                    {{ formatTimeLabel(data.school_year?.class_start_time?.slice(0, 5)) }} – {{ formatTimeLabel(data.school_year?.class_end_time?.slice(0, 5)) }}
-                                </span>
-                                <div class="text-xs mt-0.5" :class="isDark ? 'text-slate-500' : 'text-slate-400'">
-                                    {{ (data.school_year?.available_days ?? []).join(', ') || '—' }}
-                                </div>
-                            </template>
-                        </Column>
-                        <Column field="remarks" header="Remarks">
-                            <template #body="{ data }">
-                                <span :class="isDark ? 'text-slate-400' : 'text-slate-500'">{{ data.remarks || '—' }}</span>
-                            </template>
-                        </Column>
-                        <Column header="Actions" style="width: 9rem">
-                            <template #body="{ data }">
-                                <div class="flex gap-1">
-                                    <template v-if="!data.deleted_at">
-                                        <Button
-                                            icon="pi pi-pencil"
-                                            text
-                                            rounded
-                                            severity="secondary"
-                                            size="small"
-                                            aria-label="Edit"
-                                            @click="openEditAcademicTerm(data)"
-                                        />
-                                        <Button
-                                            v-if="data.status === 'Inactive' && data.all_sections_finalized && data.has_sections"
-                                            icon="pi pi-inbox"
-                                            text
-                                            rounded
-                                            severity="warn"
-                                            size="small"
-                                            aria-label="End Semester"
-                                            title="End Semester — archive this term"
-                                            @click="onArchiveAcademicTerm(data)"
-                                        />
-                                        <Button
-                                            v-if="data.status === 'Archived'"
-                                            icon="pi pi-history"
-                                            text
-                                            rounded
-                                            severity="warn"
-                                            size="small"
-                                            aria-label="Reopen"
-                                            title="Reopen — undo End Semester, back to Inactive"
-                                            @click="onReopenAcademicTerm(data)"
-                                        />
-                                        <Button
-                                            icon="pi pi-trash"
-                                            text
-                                            rounded
-                                            severity="danger"
-                                            size="small"
-                                            aria-label="Delete"
-                                            @click="onDeleteAcademicTerm(data)"
-                                        />
-                                    </template>
-                                    <Button
-                                        v-else
-                                        icon="pi pi-refresh"
-                                        text
-                                        rounded
-                                        severity="success"
-                                        size="small"
-                                        label="Restore"
-                                        @click="onRestoreAcademicTerm(data)"
-                                    />
-                                </div>
-                            </template>
-                        </Column>
-                    </DataTable>
-                </template>
-                </Card>
+                            <Button
+                                v-else
+                                icon="pi pi-refresh"
+                                label="Restore"
+                                text
+                                severity="success"
+                                size="small"
+                                @click="onRestoreAcademicTerm(term)"
+                            />
+                        </div>
+                    </li>
+                </ul>
+
+                <Paginator
+                    v-if="academicTerms.total > academicTerms.per_page"
+                    class="!mt-4 !bg-transparent"
+                    :class="isDark ? 'term-paginator-dark' : ''"
+                    template="PrevPageLink PageLinks NextPageLink"
+                    :rows="academicTerms.per_page"
+                    :totalRecords="academicTerms.total"
+                    :first="(academicTerms.current_page - 1) * academicTerms.per_page"
+                    @page="onAcademicTermPage"
+                />
             </div>
         </div>
 
@@ -933,49 +1037,31 @@ const helpPopover = ref(null);
 </template>
 
 <style scoped>
-/* Dark-mode overrides for the PrimeVue DataTable on this page. Scoped
-   classes on the DataTable root don't reach its internal elements, so
-   these target PrimeVue's own classes — kept local to this file via
-   the .academic-calendar-table-dark wrapper class. */
-.academic-calendar-table-dark :deep(.p-datatable-table) {
-    background: transparent;
+/* The only non-user-triggered motion on the page: a soft pulse on the
+   Active term's dot. Switched off for people who ask for less motion. */
+.term-live-dot {
+    animation: term-live-pulse 2.4s ease-in-out infinite;
 }
-.academic-calendar-table-dark :deep(.p-datatable-thead > tr > th) {
-    background: rgba(255, 255, 255, 0.04);
-    color: #cbd5e1;
-    border-color: rgba(255, 255, 255, 0.1);
+@keyframes term-live-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.55); }
+    50% { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
 }
-.academic-calendar-table-dark :deep(.p-datatable-tbody > tr) {
-    background: transparent;
-    color: #e2e8f0;
-}
-/* PrimeVue stripes rows via :nth-child, not a .p-datatable-row-striped
-   class — targeting that class was a no-op, which is why striped rows
-   fell back to PrimeVue's own (light) surface token even in dark mode. */
-.academic-calendar-table-dark :deep(.p-datatable-tbody > tr:nth-child(even)) {
-    background: rgba(255, 255, 255, 0.045) !important;
-    box-shadow:
-        inset 0 1px 0 rgba(255, 255, 255, 0.05),
-        0 2px 6px rgba(0, 0, 0, 0.35) !important;
-    position: relative;
-}
-.academic-calendar-table-dark :deep(.p-datatable-tbody > tr > td) {
-    border-color: rgba(255, 255, 255, 0.08);
-}
-.academic-calendar-table-dark :deep(.p-datatable-tbody > tr:hover) {
-    background: rgba(255, 255, 255, 0.08) !important;
-}
-.academic-calendar-table-dark :deep(.p-paginator) {
-    background: transparent;
-    color: #cbd5e1;
+@media (prefers-reduced-motion: reduce) {
+    .term-live-dot { animation: none; }
 }
 
-/* Light mode: same nth-child fix, plus a matching soft "lifted" shadow on
-   striped rows so they read as a raised band rather than flat shading. */
-:deep(.p-datatable-tbody > tr:nth-child(even)) {
-    box-shadow:
-        inset 0 1px 0 rgba(255, 255, 255, 0.6),
-        0 2px 6px rgba(30, 41, 59, 0.08);
-    position: relative;
+/* Dark-mode paginator (PrimeVue's own classes, kept local to this page). */
+.term-paginator-dark :deep(.p-paginator) {
+    background: transparent;
+    color: #cbd5e1;
+}
+.term-paginator-dark :deep(.p-paginator-page),
+.term-paginator-dark :deep(.p-paginator-prev),
+.term-paginator-dark :deep(.p-paginator-next) {
+    color: #cbd5e1;
+}
+.term-paginator-dark :deep(.p-paginator-page.p-paginator-page-selected) {
+    background: rgba(96, 165, 250, 0.2);
+    color: #bfdbfe;
 }
 </style>

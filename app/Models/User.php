@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Illuminate\Support\Facades\Storage;
@@ -97,6 +98,18 @@ class User extends Authenticatable
     }
 
     /**
+     * The Faculty Master record this login belongs to, for a Faculty-role
+     * account (faculties.user_id). Null for every other kind of user.
+     * See FacultyAccountService.
+     *
+     * @return HasOne<Faculty>
+     */
+    public function faculty(): HasOne
+    {
+        return $this->hasOne(Faculty::class);
+    }
+
+    /**
      * The departments this user (an OIC) is assigned to oversee. An OIC
      * can be assigned to any subset of departments within their college.
      *
@@ -141,6 +154,9 @@ class User extends Authenticatable
             'password' => 'hashed',
             'password_changed_at' => 'datetime',
             'must_change_password' => 'boolean',
+            // Faculty-account invitation tracking — see FacultyAccountService.
+            'invited_at' => 'datetime',
+            'invite_accepted_at' => 'datetime',
             // Additive GenEd/Minor authority for a Dean/OIC who is ALSO
             // acting as Assistant Dean (e.g. a college's Dean covering
             // GenEd/Minor subjects institution-wide). Never set for a

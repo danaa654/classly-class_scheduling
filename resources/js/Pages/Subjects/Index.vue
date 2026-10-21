@@ -4,6 +4,7 @@ import { ref, computed, watch } from 'vue';
 import { useToast } from 'primevue/usetoast';
 import Swal from 'sweetalert2';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import PageHeader from '@/Components/PageHeader.vue';
 import Card from 'primevue/card';
 import Toolbar from 'primevue/toolbar';
 import InputText from 'primevue/inputtext';
@@ -105,6 +106,42 @@ const onPage = (event) => {
 
 const onRefresh = () => {
     reloadSubjects({ subject_page: props.subjects.current_page });
+};
+
+/* ------------------------------------------------------------------ */
+/* Table presentation helpers                                          */
+/* ------------------------------------------------------------------ */
+
+// College color (same color the Curriculum / Academic Structure pages
+// use). Subjects with no college (General Education) fall back to slate.
+const hexOrNull = (hex) => (/^#[0-9a-f]{6}$/i.test(hex ?? '') ? hex : null);
+const collegeColor = (row) => hexOrNull(row.college?.color);
+
+const codeBadgeStyle = (row) => {
+    const color = collegeColor(row) ?? '#64748B';
+    const r = parseInt(color.slice(1, 3), 16);
+    const g = parseInt(color.slice(3, 5), 16);
+    const b = parseInt(color.slice(5, 7), 16);
+    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+
+    return { backgroundColor: color, color: luminance > 0.62 ? '#1E293B' : '#FFFFFF' };
+};
+
+// Colored left edge on every row, matching the Curriculum list.
+const rowStyle = (row) => ({
+    boxShadow: `inset 4px 0 0 0 ${collegeColor(row) ?? '#CBD5E1'}`,
+});
+
+const categoryPill = (category) => {
+    const d = isDark.value;
+    switch (category) {
+        case 'Major':
+            return d ? 'bg-blue-500/20 text-blue-300' : 'bg-blue-100 text-blue-700';
+        case 'General Education':
+            return d ? 'bg-sky-500/20 text-sky-300' : 'bg-sky-100 text-sky-700';
+        default:
+            return d ? 'bg-violet-500/20 text-violet-300' : 'bg-violet-100 text-violet-700';
+    }
 };
 
 /* ------------------------------------------------------------------ */
@@ -412,20 +449,10 @@ const onDeleteSubject = (subject) => {
             <span class="text-lg font-semibold" :class="isDark ? 'text-white' : 'text-[#1E293B]'">Subjects</span>
         </template>
 
-        <div class="max-w-7xl mx-auto w-full" :class="isDark ? 'dark-scope' : ''">
+        <div class="w-full" :class="isDark ? 'dark-scope' : ''">
             <!-- Page Title -->
-            <div class="neu-card neu-spotlight relative mb-8 overflow-hidden rounded-2xl">
-                <div class="pointer-events-none absolute inset-0 overflow-hidden rounded-2xl">
-                    <div class="absolute inset-0" :class="isDark ? 'bg-gradient-to-br from-blue-500/10 via-transparent to-red-500/10' : 'bg-gradient-to-br from-blue-50 via-transparent to-red-50/60'"></div>
-                    <div class="absolute -right-10 -top-16 h-44 w-44 rounded-full bg-gradient-to-br" :class="isDark ? 'from-blue-500/20 via-blue-500/5 to-transparent' : 'from-blue-200/80 via-blue-100/40 to-transparent'"></div>
-                    <div class="absolute -bottom-20 right-16 h-40 w-40 rounded-full bg-gradient-to-tr" :class="isDark ? 'from-red-500/20 via-red-500/5 to-transparent' : 'from-red-200/70 via-red-100/30 to-transparent'"></div>
-                    <div class="absolute -left-10 bottom-0 h-28 w-28 rounded-full bg-gradient-to-tr border-4" :class="isDark ? 'from-blue-500/10 to-transparent border-blue-400/10' : 'from-blue-100/60 to-transparent border-blue-100'"></div>
-                    <div class="absolute left-[38%] top-0 h-3 w-3 rounded-full bg-gradient-to-br" :class="isDark ? 'from-red-400/50 to-blue-400/30' : 'from-red-400/80 to-blue-300/60'"></div>
-                    <div class="absolute left-[55%] bottom-4 h-20 w-20 rounded-full bg-gradient-to-r blur-xl" :class="isDark ? 'from-blue-500/10 to-red-500/10' : 'from-blue-200/40 to-red-200/40'"></div>
-                </div>
-                <div class="relative rounded-2xl p-6 transition-colors duration-300">
-                <h1 class="text-2xl font-bold tracking-tight flex items-center gap-2" :class="isDark ? 'text-white' : 'text-[#1E293B]'">
-                    Subjects
+            <PageHeader title="Subjects" subtitle="Manage the master list of all subjects offered by the institution." icon="pi pi-bookmark" tone="blue" :count="subjects.total" count-label="subjects">
+                <template #info>
                     <InfoPopover
                         title="Subjects"
                         :paragraphs="[
@@ -437,17 +464,13 @@ const onDeleteSubject = (subject) => {
                             'Deleting a subject only affects future scheduling — it does not remove it from sections that already use it.',
                         ]"
                     />
-                </h1>
-                <p class="mt-1" :class="isDark ? 'text-slate-400' : 'text-slate-500'">
-                    Manage the master list of all subjects offered by the institution.
-                </p>
-                </div>
-            </div>
+                </template>
+            </PageHeader>
 
-            <div class="neu-card rounded-2xl transition-colors duration-300">
+            <div class="neu-card rounded-2xl p-4 transition-colors duration-300">
             <Card
                 class="!rounded-2xl !bg-transparent !border-0 !shadow-none"
-                :pt="{ body: { class: '!bg-transparent' } }"
+                :pt="{ body: { class: '!bg-transparent !p-0' }, content: { class: '!p-0' } }"
             >
                 <template #content>
                     <!-- Top Toolbar -->
@@ -488,10 +511,12 @@ const onDeleteSubject = (subject) => {
                         :value="subjects.data"
                         :loading="loading"
                         dataKey="id"
-                        class="neu-inset neu-table rounded-xl overflow-hidden"
+                        class="neu-inset neu-table subjects-table w-full rounded-xl overflow-hidden"
                         :class="isDark ? 'neu-table-dark' : ''"
+                        :rowStyle="rowStyle"
+                        tableStyle="min-width: 100%"
                         stripedRows
-                        responsiveLayout="scroll"
+                        scrollable
                         lazy
                         paginator
                         :rows="subjects.per_page"
@@ -515,18 +540,35 @@ const onDeleteSubject = (subject) => {
                             </div>
                         </template>
 
-                        <Column field="subject_code" header="Subject Code" style="width: 10rem" />
-                        <Column field="subject_title" header="Subject Title" />
-                        <Column header="Category" style="width: 11rem">
+                        <Column header="Subject Code" style="width: 9rem">
                             <template #body="{ data }">
-                                {{ data.category }}
+                                <span
+                                    class="inline-flex min-w-[4.5rem] max-w-[8rem] items-center justify-center truncate rounded-lg px-2.5 py-1 text-xs font-bold tracking-wide"
+                                    :style="codeBadgeStyle(data)"
+                                    :title="data.subject_code"
+                                >{{ data.subject_code }}</span>
                             </template>
                         </Column>
-                        <Column header="Subject Type" style="width: 11rem">
+                        <Column header="Subject Title" style="min-width: 18rem">
+                            <template #body="{ data }">
+                                <p class="break-words text-[15px] font-semibold leading-snug" :class="isDark ? 'text-white' : 'text-[#1E293B]'">
+                                    {{ data.subject_title }}
+                                </p>
+                            </template>
+                        </Column>
+                        <Column header="Category" style="width: 10rem">
+                            <template #body="{ data }">
+                                <span class="inline-flex whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-semibold" :class="categoryPill(data.category)">
+                                    {{ data.category }}
+                                </span>
+                            </template>
+                        </Column>
+                        <Column header="Subject Type" style="width: 10rem">
                             <template #body="{ data }">
                                 <span
                                     v-if="data.subject_type === 'practicum'"
-                                    class="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-1 text-xs font-semibold text-amber-800"
+                                    class="inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-semibold"
+                                    :class="isDark ? 'bg-amber-500/20 text-amber-300' : 'bg-amber-100 text-amber-800'"
                                 >
                                     <i class="pi pi-map-marker text-[10px]"></i>
                                     Practicum / OJT
@@ -534,45 +576,55 @@ const onDeleteSubject = (subject) => {
                                 <span v-else class="text-sm" :class="isDark ? 'text-slate-400' : 'text-slate-500'">Regular</span>
                             </template>
                         </Column>
-                        <Column header="College" style="width: 8rem">
+                        <Column header="College" style="width: 7rem">
                             <template #body="{ data }">
-                                {{ data.college?.code || '—' }}
+                                <span class="font-medium" :class="isDark ? 'text-slate-200' : 'text-slate-700'">{{ data.college?.code || '—' }}</span>
                             </template>
                         </Column>
-                        <Column header="Major(s)" style="width: 16rem">
+                        <Column header="Major(s)" style="min-width: 10rem">
                             <template #body="{ data }">
-                                {{ data.majors?.length ? data.majors.map((m) => m.code).join(', ') : '—' }}
+                                <div v-if="data.majors?.length" class="flex flex-wrap gap-1">
+                                    <span
+                                        v-for="m in data.majors"
+                                        :key="m.id"
+                                        class="rounded-md px-1.5 py-0.5 text-xs font-semibold"
+                                        :class="isDark ? 'bg-white/10 text-slate-300' : 'bg-slate-100 text-slate-600'"
+                                    >{{ m.code }}</span>
+                                </div>
+                                <span v-else :class="isDark ? 'text-slate-500' : 'text-slate-400'">—</span>
                             </template>
                         </Column>
-                        <Column header="Units" style="width: 8rem">
+                        <Column header="Units" style="width: 6rem" headerClass="subjects-num" bodyClass="subjects-num">
                             <template #body="{ data }">
-                                {{ data.units }}
+                                <span class="font-semibold" :class="isDark ? 'text-white' : 'text-[#1E293B]'">{{ data.units }}</span>
                             </template>
                         </Column>
-                        <Column header="Lecture Hours" style="width: 8rem">
+                        <Column header="Lecture Hours" style="width: 7rem" headerClass="subjects-num" bodyClass="subjects-num">
                             <template #body="{ data }">
                                 {{ data.subject_type === 'practicum' ? '—' : data.lecture_hours }}
                             </template>
                         </Column>
-                        <Column header="Lab Hours" style="width: 8rem">
+                        <Column header="Lab Hours" style="width: 7rem" headerClass="subjects-num" bodyClass="subjects-num">
                             <template #body="{ data }">
                                 {{ data.subject_type === 'practicum' ? '—' : data.laboratory_hours }}
                             </template>
                         </Column>
-                        <Column header="Required Hours" style="width: 9rem">
+                        <Column header="Required Hours" style="width: 8rem" headerClass="subjects-num" bodyClass="subjects-num">
                             <template #body="{ data }">
                                 {{ data.subject_type === 'practicum' ? (data.required_hours ?? '—') : '—' }}
                             </template>
                         </Column>
-                        <Column header="Status" style="width: 9rem">
+                        <Column header="Status" style="width: 7rem">
                             <template #body="{ data }">
-                                <Tag
-                                    :value="data.is_active ? 'Active' : 'Inactive'"
-                                    :severity="data.is_active ? 'success' : 'secondary'"
-                                />
+                                <span
+                                    class="inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold"
+                                    :class="data.is_active
+                                        ? (isDark ? 'bg-emerald-500/20 text-emerald-300' : 'bg-emerald-100 text-emerald-700')
+                                        : (isDark ? 'bg-white/10 text-slate-400' : 'bg-slate-100 text-slate-500')"
+                                >{{ data.is_active ? 'Active' : 'Inactive' }}</span>
                             </template>
                         </Column>
-                        <Column header="Actions" style="width: 9rem">
+                        <Column header="Actions" style="width: 7rem">
                             <template #body="{ data }">
                                 <div v-if="data.can_manage" class="flex gap-1">
                                     <Button
@@ -1022,6 +1074,19 @@ const onDeleteSubject = (subject) => {
     </AppLayout>
 </template>
 <style scoped>
+/* Wide, roomy table: numeric columns centered, rows breathe a little. */
+.subjects-table :deep(.p-datatable-tbody > tr > td) {
+    padding-top: 0.85rem;
+    padding-bottom: 0.85rem;
+}
+.subjects-table :deep(th.subjects-num),
+.subjects-table :deep(td.subjects-num) {
+    text-align: center;
+}
+.subjects-table :deep(th.subjects-num .p-datatable-column-header-content) {
+    justify-content: center;
+}
+
 /* Dark-mode overrides. Wrapping an element in the "dark-scope" class
    (added conditionally via isDark) recolors the shared light-mode
    Tailwind utility classes and PrimeVue component chrome used

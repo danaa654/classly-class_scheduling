@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\College;
 use App\Models\FacultyLoadRequest;
 use App\Models\SchoolYear;
 use App\Services\ImageOptimizationService;
@@ -40,6 +41,7 @@ class SettingsController extends Controller
         'autoschedule' => ['Registrar'],
         'irregular' => ['Registrar'],
         'notifications' => ['Registrar', 'Assistant Dean', 'Dean', 'OIC'],
+        'collegeColors' => ['Registrar'],
     ];
 
     public function __construct(
@@ -56,8 +58,13 @@ class SettingsController extends Controller
     public function index(Request $request): Response
     {
         $user = $request->user();
-        $role = $user->getRoleNames()->first();
-        $isAdministrator = $role === 'Administrator';
+        // A user can hold several roles at once (e.g. Faculty + Registrar
+        // + OIC). Never decide access from getRoleNames()->first() — that
+        // just returns whichever role happens to be listed first (often
+        // "Faculty"), which silently stripped a multi-role Registrar of
+        // their Registrar tabs. Check each role with hasRole() instead.
+        $isAdministrator = $user->hasRole('Administrator');
+        $isRegistrar = $user->hasRole('Registrar');
         // Registrar has the same read access as Administrator across
         // the app except for Active Users/Sessions (see
         // ActiveSessionController's doc comment) — Activity Log and
@@ -68,7 +75,7 @@ class SettingsController extends Controller
         // tab (already listed in $visibleGroups below) rendered with
         // no data at all — this closes that gap rather than changing
         // any write/action permission.
-        $canViewAuditData = $isAdministrator || $role === 'Registrar';
+        $canViewAuditData = $isAdministrator || $isRegistrar;
 
         // Activity Log specifically (not the rest of $canViewAuditData's
         // System/Active-Sessions info) is also opened to Dean/OIC/
@@ -90,10 +97,10 @@ class SettingsController extends Controller
         // responsibilities" — neither manages school-wide scheduling
         // configuration today.
         $visibleGroups = match (true) {
-            $isAdministrator, $role === 'Registrar' => [
+            $isAdministrator, $isRegistrar => [
                 'general', 'academic', 'workload', 'rooms',
                 'autoschedule', 'irregular', 'notifications',
-                'activityLog', 'system',
+                'collegeColors', 'activityLog', 'system',
             ],
             // Dean/OIC/Assistant Dean don't get 'system' (Active
             // Sessions + app/DB info stays Admin/Registrar-only), but
@@ -104,8 +111,21 @@ class SettingsController extends Controller
 
         return Inertia::render('Settings/Index', [
             'visibleGroups' => $visibleGroups,
-            'editableGroups' => $this->editableGroupsFor($user, $role, $isAdministrator, $visibleGroups),
+            'editableGroups' => $this->editableGroupsFor($user, $isAdministrator, $visibleGroups),
             'settings' => $this->settings->all(),
+            // College Colors tab — only Admin/Registrar ever see this
+            // group (see $visibleGroups), so the list is only built for them.
+            'colleges' => in_array('collegeColors', $visibleGroups, true)
+                ? College::query()->orderBy('code')->get(['id', 'code', 'name', 'short_name', 'color'])
+                    ->map(fn (College $college) => [
+                        'id' => $college->id,
+                        'code' => $college->code,
+                        'name' => $college->name,
+                        'short_name' => $college->short_name,
+                        'color' => $college->color ?: College::COLOR_PALETTE[0],
+                    ])->values()
+                : [],
+            'collegeColorPalette' => College::COLOR_PALETTE,
             // Read by every role's Manage Account tab to render the
             // live password requirements checklist — no longer
             // Administrator-only now that the read-only Security tab
@@ -320,6 +340,32 @@ class SettingsController extends Controller
     }
 
     /**
+     * Save the color of every College. These colors drive the Room Grid and
+     * Section Grid blocks (see resources/js/composables/useCollegeColors.js).
+     */
+    public function updateCollegeColors(Request $request): RedirectResponse
+    {
+        $this->authorizeGroup($request, 'collegeColors');
+
+        $data = $request->validate([
+            'colors' => ['required', 'array', 'min:1'],
+            'colors.*.id' => ['required', 'integer', 'exists:colleges,id'],
+            'colors.*.color' => ['required', 'string', 'regex:/^#[0-9A-Fa-f]{6}$/'],
+        ], [
+            'colors.*.color.regex' => 'Each college color must be a valid hex color like #EAB308.',
+        ]);
+
+        foreach ($data['colors'] as $entry) {
+            // Per-model save (not a bulk query update) so College's
+            // saved() hook refreshes the shared color cache.
+            College::query()->whereKey($entry['id'])->first()
+                ?->update(['color' => strtoupper($entry['color'])]);
+        }
+
+        return back()->with('success', 'College colors updated.');
+    }
+
+    /**
      * Non-destructive System / Maintenance action: drop the cached
      * settings snapshot so the very next read rebuilds it from the
      * database. Safe to run any time; never deletes data.
@@ -350,7 +396,7 @@ class SettingsController extends Controller
      * @param  list<string>  $visibleGroups
      * @return list<string>
      */
-    private function editableGroupsFor($user, ?string $role, bool $isAdministrator, array $visibleGroups): array
+    private function editableGroupsFor($user, bool $isAdministrator, array $visibleGroups): array
     {
         // 'system' is informational for everyone (including
         // Administrator), and 'security' is deliberately read-only for
@@ -362,12 +408,14 @@ class SettingsController extends Controller
             return array_values(array_diff($visibleGroups, $readOnlyGroups));
         }
 
-        return array_values(array_filter($visibleGroups, function (string $group) use ($role, $readOnlyGroups) {
+        return array_values(array_filter($visibleGroups, function (string $group) use ($user, $readOnlyGroups) {
             if (in_array($group, $readOnlyGroups, true)) {
                 return false;
             }
 
-            return in_array($role, self::EDITABLE_BY[$group] ?? [], true);
+            // hasAnyRole (not a single "primary" role) so multi-role
+            // users keep every group any one of their roles allows.
+            return $user->hasAnyRole(self::EDITABLE_BY[$group] ?? []);
         }));
     }
 

@@ -4,6 +4,7 @@ import { ref, computed, watch } from 'vue';
 import { useToast } from 'primevue/usetoast';
 import Swal from 'sweetalert2';
 import AppLayout from '@/Layouts/AppLayout.vue';
+import PageHeader from '@/Components/PageHeader.vue';
 import Card from 'primevue/card';
 import Toolbar from 'primevue/toolbar';
 import InputText from 'primevue/inputtext';
@@ -18,6 +19,7 @@ import Dialog from 'primevue/dialog';
 import Toast from 'primevue/toast';
 import ProgressBar from 'primevue/progressbar';
 import RoomRecommendedSubjects from '@/Components/Scheduling/RoomRecommendedSubjects.vue';
+import RoomFloorGrid from '@/Components/Scheduling/RoomFloorGrid.vue';
 import InfoPopover from '@/Components/InfoPopover.vue';
 import LoadingSkeleton from '@/Components/LoadingSkeleton.vue';
 import { useTheme } from '@/composables/useTheme';
@@ -71,6 +73,16 @@ const AVAILABILITY_SEVERITY = {
 
 const utilizationSeverity = (status) => UTILIZATION_SEVERITY[status] ?? 'info';
 const availabilitySeverity = (status) => AVAILABILITY_SEVERITY[status] ?? 'info';
+
+/* Presentation helpers — college color on the row edge + college pill,
+   same look as Faculty, Subjects and Curriculum. */
+const roomColor = (row) => (/^#[0-9a-f]{6}$/i.test(row.college?.color ?? '') ? row.college.color : null);
+const collegePillStyle = (row) => ({
+    backgroundColor: `${roomColor(row) ?? '#94A3B8'}${isDark.value ? '33' : '22'}`,
+});
+const rowStyle = (row) => ({
+    boxShadow: `inset 4px 0 0 0 ${roomColor(row) ?? '#CBD5E1'}`,
+});
 
 const toast = useToast();
 const page = usePage();
@@ -211,7 +223,6 @@ const floor = ref(props.filters.floor ?? null);
 const roomTypeFilter = ref(props.filters.room_type ?? null);
 const collegeFilter = ref(props.filters.college_id ? Number(props.filters.college_id) : null);
 const departmentFilter = ref(props.filters.department_id ? Number(props.filters.department_id) : null);
-const statusFilter = ref(props.filters.status ?? null);
 const availabilityFilter = ref(props.filters.availability ?? null);
 const loading = ref(false);
 let searchDebounce = null;
@@ -224,7 +235,6 @@ const activeQuery = () => ({
     room_type: roomTypeFilter.value,
     college_id: collegeFilter.value,
     department_id: departmentFilter.value,
-    status: statusFilter.value,
     availability: availabilityFilter.value,
 });
 
@@ -275,18 +285,35 @@ watch(collegeFilter, () => {
     }
 });
 
-watch([building, floor, roomTypeFilter, collegeFilter, departmentFilter, statusFilter, availabilityFilter], () => {
+watch([building, floor, roomTypeFilter, collegeFilter, departmentFilter, availabilityFilter], () => {
     reloadRooms({ room_page: 1 });
 });
 
 const quickFilters = [
     { label: 'All Rooms', value: 'all', icon: 'pi pi-th-large' },
+    { label: 'Active', value: 'active', icon: 'pi pi-check' },
     { label: 'Available', value: 'available', icon: 'pi pi-check-circle' },
     { label: 'Fully Booked', value: 'fully_booked', icon: 'pi pi-lock' },
     { label: 'High Usage', value: 'high_usage', icon: 'pi pi-chart-line' },
     { label: 'Conflicts', value: 'conflicts', icon: 'pi pi-exclamation-triangle' },
     { label: 'Inactive', value: 'inactive', icon: 'pi pi-ban' },
 ];
+
+// Summary cards (Total / Active / Available / Fully Booked / Avg. Utilization /
+// Conflicts) double as one-click filters. Clicking the card that is already
+// selected clears the filter back to All Rooms.
+const summaryCards = computed(() => [
+    { label: 'Total Rooms', filter: 'all', value: props.summary.total_rooms, valueClass: 'text-[#1E293B]' },
+    { label: 'Active Rooms', filter: 'active', value: props.summary.active_rooms, valueClass: 'text-[#1E293B]' },
+    { label: 'Available Rooms', filter: 'available', value: props.summary.available_rooms, valueClass: 'text-emerald-600' },
+    { label: 'Fully Booked', filter: 'fully_booked', value: props.summary.fully_booked_rooms, valueClass: 'text-amber-600' },
+    { label: 'Avg. Utilization', filter: 'utilization', value: `${props.summary.average_utilization}%`, valueClass: 'text-[#1E293B]' },
+    { label: 'Conflicts', filter: 'conflicts', value: props.summary.rooms_with_conflicts, valueClass: props.summary.rooms_with_conflicts > 0 ? 'text-red-600' : 'text-[#1E293B]' },
+]);
+
+const selectSummaryCard = (filter) => {
+    selectQuickFilter(quickFilter.value === filter ? 'all' : filter);
+};
 
 const selectQuickFilter = (value) => {
     quickFilter.value = value;
@@ -296,6 +323,19 @@ const selectQuickFilter = (value) => {
 const onPage = (event) => {
     reloadRooms({ room_page: event.page + 1 });
 };
+
+// List (the paginated Rooms table) vs Grid (every room by Floor x Day, in one
+// glance). Remembered per browser so the page reopens on the view last used.
+const VIEW_KEY = 'classly.rooms.view';
+const readView = () => {
+    try { return localStorage.getItem(VIEW_KEY) === 'grid' ? 'grid' : 'list'; } catch (e) { return 'list'; }
+};
+const viewMode = ref(readView());
+const setViewMode = (mode) => {
+    viewMode.value = mode;
+    try { localStorage.setItem(VIEW_KEY, mode); } catch (e) { /* storage unavailable — view just isn't remembered */ }
+};
+const roomGridRef = ref(null);
 
 const onRefresh = () => {
     reloadRooms({ room_page: props.rooms.current_page });
@@ -595,20 +635,10 @@ const closeSchedule = () => {
             <span class="text-lg font-semibold text-[#1E293B]">Rooms</span>
         </template>
 
-        <div class="max-w-7xl mx-auto w-full" :class="isDark ? 'dark-scope' : ''">
+        <div class="w-full" :class="isDark ? 'dark-scope' : ''">
             <!-- Page Title -->
-            <div class="neu-card neu-spotlight relative mb-8 overflow-hidden rounded-2xl">
-                <div class="pointer-events-none absolute inset-0 overflow-hidden rounded-2xl">
-                    <div class="absolute inset-0" :class="isDark ? 'bg-gradient-to-br from-blue-500/10 via-transparent to-red-500/10' : 'bg-gradient-to-br from-blue-50 via-transparent to-red-50/60'"></div>
-                    <div class="absolute -right-10 -top-16 h-44 w-44 rounded-full bg-gradient-to-br" :class="isDark ? 'from-blue-500/20 via-blue-500/5 to-transparent' : 'from-blue-200/80 via-blue-100/40 to-transparent'"></div>
-                    <div class="absolute -bottom-20 right-16 h-40 w-40 rounded-full bg-gradient-to-tr" :class="isDark ? 'from-red-500/20 via-red-500/5 to-transparent' : 'from-red-200/70 via-red-100/30 to-transparent'"></div>
-                    <div class="absolute -left-10 bottom-0 h-28 w-28 rounded-full bg-gradient-to-tr border-4" :class="isDark ? 'from-blue-500/10 to-transparent border-blue-400/10' : 'from-blue-100/60 to-transparent border-blue-100'"></div>
-                    <div class="absolute left-[38%] top-0 h-3 w-3 rounded-full bg-gradient-to-br" :class="isDark ? 'from-red-400/50 to-blue-400/30' : 'from-red-400/80 to-blue-300/60'"></div>
-                    <div class="absolute left-[55%] bottom-4 h-20 w-20 rounded-full bg-gradient-to-r blur-xl" :class="isDark ? 'from-blue-500/10 to-red-500/10' : 'from-blue-200/40 to-red-200/40'"></div>
-                </div>
-                <div class="relative rounded-2xl p-6 transition-colors duration-300">
-                <h1 class="text-2xl font-bold tracking-tight flex items-center gap-2 text-[#1E293B]">
-                    Rooms
+            <PageHeader title="Rooms" subtitle="Manage classrooms, laboratories, and other scheduling facilities." icon="pi pi-building" tone="amber" :count="rooms.total" count-label="rooms">
+                <template #info>
                     <InfoPopover
                         title="Rooms"
                         :paragraphs="[
@@ -620,41 +650,25 @@ const closeSchedule = () => {
                             'Inactive rooms are kept for records but are not offered when scheduling new classes.',
                         ]"
                     />
-                </h1>
-                <p class="mt-1 text-slate-500">
-                    Manage classrooms, laboratories, and other scheduling facilities.
-                </p>
-                </div>
-            </div>
+                </template>
+            </PageHeader>
 
-            <!-- Room Usage Summary Cards -->
+            <!-- Room Usage Summary Cards — click a card to filter the list below
+                 to that group (click it again, or "All Rooms", to clear). -->
             <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-5">
-                <div class="neu-card rounded-xl p-4 transition-colors duration-300">
-                    <p class="text-xs font-medium text-slate-500">Total Rooms</p>
-                    <p class="text-2xl font-bold text-[#1E293B] mt-1">{{ summary.total_rooms }}</p>
-                </div>
-                <div class="neu-card rounded-xl p-4 transition-colors duration-300">
-                    <p class="text-xs font-medium text-slate-500">Active Rooms</p>
-                    <p class="text-2xl font-bold text-[#1E293B] mt-1">{{ summary.active_rooms }}</p>
-                </div>
-                <div class="neu-card rounded-xl p-4 transition-colors duration-300">
-                    <p class="text-xs font-medium text-slate-500">Available Rooms</p>
-                    <p class="text-2xl font-bold text-emerald-600 mt-1">{{ summary.available_rooms }}</p>
-                </div>
-                <div class="neu-card rounded-xl p-4 transition-colors duration-300">
-                    <p class="text-xs font-medium text-slate-500">Fully Booked</p>
-                    <p class="text-2xl font-bold text-amber-600 mt-1">{{ summary.fully_booked_rooms }}</p>
-                </div>
-                <div class="neu-card rounded-xl p-4 transition-colors duration-300">
-                    <p class="text-xs font-medium text-slate-500">Avg. Utilization</p>
-                    <p class="text-2xl font-bold text-[#1E293B] mt-1">{{ summary.average_utilization }}%</p>
-                </div>
-                <div class="neu-card rounded-xl p-4 transition-colors duration-300">
-                    <p class="text-xs font-medium text-slate-500">Conflicts</p>
-                    <p class="text-2xl font-bold" :class="summary.rooms_with_conflicts > 0 ? 'text-red-600' : 'text-[#1E293B]'">
-                        {{ summary.rooms_with_conflicts }}
-                    </p>
-                </div>
+                <button
+                    v-for="card in summaryCards"
+                    :key="card.filter"
+                    type="button"
+                    class="neu-card rounded-xl p-4 text-left cursor-pointer transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+                    :class="quickFilter === card.filter ? 'ring-2 ring-emerald-500' : ''"
+                    :aria-pressed="quickFilter === card.filter"
+                    :title="`Show: ${card.label}`"
+                    @click="selectSummaryCard(card.filter)"
+                >
+                    <p class="text-xs font-medium text-slate-500">{{ card.label }}</p>
+                    <p class="text-2xl font-bold mt-1" :class="card.valueClass">{{ card.value }}</p>
+                </button>
             </div>
 
             <div class="neu-card rounded-2xl transition-colors duration-300">
@@ -666,7 +680,35 @@ const closeSchedule = () => {
                     <!-- Top Toolbar -->
                     <Toolbar class="!bg-transparent !border-0 !px-0 !pt-0 !pb-4 flex-wrap gap-3 neu-form">
                         <template #start>
-                            <span class="relative w-full sm:w-80">
+                            <div class="flex flex-wrap items-center gap-3">
+                            <!-- List / Grid view switch — one segmented control, always on the left -->
+                            <div
+                                class="inline-flex items-center gap-0.5 rounded-xl border p-0.5"
+                                :class="isDark ? 'border-white/10 bg-white/5' : 'border-slate-200 bg-white'"
+                                role="group"
+                                aria-label="Rooms view"
+                            >
+                                <button
+                                    type="button"
+                                    class="inline-flex items-center gap-1.5 rounded-[0.65rem] px-3.5 py-1.5 text-sm font-semibold transition-colors"
+                                    :class="viewMode === 'list' ? 'bg-emerald-600 text-white shadow-sm' : (isDark ? 'text-slate-300 hover:bg-white/10' : 'text-slate-600 hover:bg-slate-100')"
+                                    :aria-pressed="viewMode === 'list'"
+                                    @click="setViewMode('list')"
+                                >
+                                    <i class="pi pi-list text-xs" aria-hidden="true"></i> List
+                                </button>
+                                <button
+                                    type="button"
+                                    class="inline-flex items-center gap-1.5 rounded-[0.65rem] px-3.5 py-1.5 text-sm font-semibold transition-colors"
+                                    :class="viewMode === 'grid' ? 'bg-emerald-600 text-white shadow-sm' : (isDark ? 'text-slate-300 hover:bg-white/10' : 'text-slate-600 hover:bg-slate-100')"
+                                    :aria-pressed="viewMode === 'grid'"
+                                    title="See every room by floor and day in one view"
+                                    @click="setViewMode('grid')"
+                                >
+                                    <i class="pi pi-th-large text-xs" aria-hidden="true"></i> Grid
+                                </button>
+                            </div>
+                            <span v-if="viewMode === 'list'" class="relative w-full sm:w-80">
                                 <i class="pi pi-search absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm"></i>
                                 <InputText
                                     v-uppercase
@@ -676,6 +718,7 @@ const closeSchedule = () => {
                                     :class="isDark ? '!text-white placeholder:!text-slate-500' : ''"
                                 />
                             </span>
+                            </div>
                         </template>
                         <template #end>
                             <div class="flex items-center gap-2">
@@ -684,8 +727,8 @@ const closeSchedule = () => {
                                     severity="secondary"
                                     text
                                     class="neu-icon-well !rounded-full"
-                                    :loading="loading"
-                                    @click="onRefresh"
+                                    :loading="viewMode === 'list' ? loading : false"
+                                    @click="viewMode === 'grid' ? roomGridRef?.reload() : onRefresh()"
                                     aria-label="Refresh"
                                 />
                                 <Button v-if="canManageRooms" label="Import" icon="pi pi-upload" severity="secondary" outlined @click="openImport" />
@@ -694,6 +737,7 @@ const closeSchedule = () => {
                         </template>
                     </Toolbar>
 
+                    <template v-if="viewMode === 'list'">
                     <!-- Quick Filters -->
                     <div class="flex flex-wrap gap-2 mb-4">
                         <Button
@@ -709,7 +753,7 @@ const closeSchedule = () => {
                     </div>
 
                     <!-- Advanced Filters -->
-                    <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2 mb-4 neu-form">
+                    <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2 mb-4 neu-form">
                         <Select
                             v-model="building"
                             :options="buildings"
@@ -754,14 +798,6 @@ const closeSchedule = () => {
                             class="w-full"
                             :pt="{ overlay: { class: isDark ? 'dark-scope' : '' } }"
                         />
-                        <Select
-                            v-model="statusFilter"
-                            :options="['Active', 'Inactive']"
-                            placeholder="Status"
-                            showClear
-                            class="w-full"
-                            :pt="{ overlay: { class: isDark ? 'dark-scope' : '' } }"
-                        />
                     </div>
 
                     <!-- Rooms Table -->
@@ -771,10 +807,12 @@ const closeSchedule = () => {
                         :value="rooms.data"
                         :loading="loading"
                         dataKey="id"
-                        class="neu-inset neu-table rounded-xl overflow-hidden"
+                        class="neu-inset neu-table rooms-table w-full rounded-xl overflow-hidden"
                         :class="isDark ? 'neu-table-dark' : ''"
+                        :rowStyle="rowStyle"
+                        tableStyle="min-width: 100%"
                         stripedRows
-                        responsiveLayout="scroll"
+                        scrollable
                         lazy
                         paginator
                         :rows="rooms.per_page"
@@ -801,29 +839,55 @@ const closeSchedule = () => {
                             </div>
                         </template>
 
-                        <Column field="room_name" header="Room Name" style="width: 16rem" />
-                        <Column field="building" header="Building" style="width: 12rem" />
+                        <Column header="Room Name" style="min-width: 14rem">
+                            <template #body="{ data }">
+                                <span class="text-[15px] font-semibold leading-snug" :class="isDark ? 'text-white' : 'text-[#1E293B]'">{{ data.room_name }}</span>
+                            </template>
+                        </Column>
+                        <Column header="Building" style="width: 11rem">
+                            <template #body="{ data }">
+                                <span :class="isDark ? 'text-slate-300' : 'text-slate-600'">{{ data.building || '—' }}</span>
+                            </template>
+                        </Column>
                         <Column header="Floor" style="width: 7rem">
                             <template #body="{ data }">
-                                {{ data.floor || '—' }}
+                                <span :class="isDark ? 'text-slate-300' : 'text-slate-600'">{{ data.floor || '—' }}</span>
                             </template>
                         </Column>
-                        <Column header="Room Type" style="width: 13rem">
+                        <Column header="Room Type" style="width: 10rem">
                             <template #body="{ data }">
-                                {{ data.room_type }}
+                                <span
+                                    class="inline-flex whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-semibold"
+                                    :class="data.room_type === 'Laboratory'
+                                        ? (isDark ? 'bg-violet-500/20 text-violet-300' : 'bg-violet-100 text-violet-700')
+                                        : (isDark ? 'bg-blue-500/20 text-blue-300' : 'bg-blue-100 text-blue-700')"
+                                >{{ data.room_type }}</span>
                             </template>
                         </Column>
-                        <Column header="College" style="width: 14rem">
+                        <Column header="College" style="min-width: 14rem">
                             <template #body="{ data }">
-                                {{ data.college?.name ?? 'All Colleges' }}
+                                <span
+                                    class="inline-flex max-w-[15rem] items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-semibold"
+                                    :class="isDark ? 'text-slate-200' : 'text-slate-700'"
+                                    :style="collegePillStyle(data)"
+                                    :title="data.college?.name ?? 'All Colleges'"
+                                >
+                                    <span class="h-1.5 w-1.5 shrink-0 rounded-full" :style="{ backgroundColor: roomColor(data) ?? '#94A3B8' }"></span>
+                                    <span class="truncate">{{ data.college?.name ?? 'All Colleges' }}</span>
+                                </span>
                             </template>
                         </Column>
-                        <Column header="Department / Program" style="width: 13rem">
+                        <Column header="Department / Program" style="width: 11rem">
                             <template #body="{ data }">
-                                {{ data.department?.name ?? 'All Programs' }}
+                                <span
+                                    v-if="data.department?.name"
+                                    class="rounded-md px-1.5 py-0.5 text-xs font-semibold"
+                                    :class="isDark ? 'bg-white/10 text-slate-300' : 'bg-slate-100 text-slate-600'"
+                                >{{ data.department.name }}</span>
+                                <span v-else class="text-sm" :class="isDark ? 'text-slate-500' : 'text-slate-400'">All Programs</span>
                             </template>
                         </Column>
-                        <Column style="width: 14rem">
+                        <Column style="width: 13rem">
                             <template #header>
                                 <span class="flex items-center gap-1">
                                     Utilization
@@ -902,15 +966,7 @@ const closeSchedule = () => {
                                 </div>
                             </template>
                         </Column>
-                        <Column header="Status" style="width: 9rem">
-                            <template #body="{ data }">
-                                <Tag
-                                    :value="data.status"
-                                    :severity="data.status === 'Active' ? 'success' : 'secondary'"
-                                />
-                            </template>
-                        </Column>
-                        <Column header="Actions" style="width: 10rem">
+                        <Column header="Actions" style="width: 8rem">
                             <template #body="{ data }">
                                 <div class="flex gap-1" @click.stop>
                                     <Button
@@ -946,6 +1002,11 @@ const closeSchedule = () => {
                             </template>
                         </Column>
                     </DataTable>
+                    </template>
+
+                    <!-- Grid view — every room by Floor x Day. Clicking a room opens the same
+                         Room Schedule Details modal as the table's calendar action. -->
+                    <RoomFloorGrid v-else ref="roomGridRef" :is-dark="isDark" @open-room="openSchedule" />
                 </template>
             </Card>
             </div>
@@ -1276,30 +1337,44 @@ const closeSchedule = () => {
 
             <div v-else-if="scheduleRoom && scheduleSummary" class="space-y-5">
                 <!-- Room info -->
-                <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
-                    <div class="neu-inset rounded-xl p-3">
-                        <p class="text-xs text-slate-400">Room Type</p>
-                        <p class="font-medium text-slate-700">{{ scheduleRoom.room_type }}</p>
-                    </div>
-                    <div class="neu-inset rounded-xl p-3">
-                        <p class="text-xs text-slate-400">Capacity</p>
-                        <p class="font-medium text-slate-700">{{ scheduleRoom.capacity }}</p>
-                    </div>
-                    <div class="neu-inset rounded-xl p-3">
-                        <p class="text-xs text-slate-400">College</p>
-                        <p class="font-medium text-slate-700">{{ scheduleRoom.college?.name ?? 'All Colleges' }}</p>
-                    </div>
-                    <div class="neu-inset rounded-xl p-3">
-                        <p class="text-xs text-slate-400">Program</p>
-                        <p class="font-medium text-slate-700">{{ scheduleRoom.department?.name ?? 'All Programs' }}</p>
-                    </div>
+                <div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 pt-1">
+                <div class="flex flex-wrap items-center gap-2">
+                    <span
+                        class="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold"
+                        :class="scheduleRoom.room_type === 'Laboratory'
+                            ? (isDark ? 'bg-violet-500/20 text-violet-300' : 'bg-violet-100 text-violet-700')
+                            : (isDark ? 'bg-blue-500/20 text-blue-300' : 'bg-blue-100 text-blue-700')"
+                        title="Room type"
+                    >
+                        <i class="pi pi-building text-[10px]"></i>{{ scheduleRoom.room_type }}
+                    </span>
+                    <span
+                        class="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold"
+                        :class="isDark ? 'bg-white/10 text-slate-300' : 'bg-slate-100 text-slate-600'"
+                        title="Capacity"
+                    >
+                        <i class="pi pi-users text-[10px]"></i>{{ scheduleRoom.capacity }} seats
+                    </span>
+                    <span
+                        class="inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold"
+                        :class="isDark ? 'text-slate-200' : 'text-slate-700'"
+                        :style="collegePillStyle(scheduleRoom)"
+                        title="College"
+                    >
+                        <span class="h-1.5 w-1.5 shrink-0 rounded-full" :style="{ backgroundColor: roomColor(scheduleRoom) ?? '#94A3B8' }"></span>
+                        {{ scheduleRoom.college?.name ?? 'All Colleges' }}
+                    </span>
+                    <span
+                        class="inline-flex items-center whitespace-nowrap rounded-full px-2.5 py-1 text-xs font-semibold"
+                        :class="isDark ? 'bg-white/10 text-slate-300' : 'bg-slate-100 text-slate-600'"
+                        title="Program"
+                    >
+                        {{ scheduleRoom.department?.name ?? 'All Programs' }}
+                    </span>
                 </div>
-
                 <!-- Quick action — jumps straight to Add Subject Recommendation
-                     (the full panel is further down, near "Recommended
-                     Subjects"), so it's reachable without scrolling. -->
-                <div class="flex justify-end">
-                    <Button
+                     (the full panel is further down), so it's reachable without scrolling. -->
+                <Button
                         label="Add Subject Recommendation"
                         icon="pi pi-plus"
                         severity="success"
@@ -1307,6 +1382,8 @@ const closeSchedule = () => {
                         @click="roomRecommendedSubjectsRef?.openAdd()"
                     />
                 </div>
+
+
 
                 <!-- Utilization -->
                 <div class="rounded-xl p-4 neu-inset">
@@ -1386,6 +1463,11 @@ const closeSchedule = () => {
 </template>
 
 <style scoped>
+.rooms-table :deep(.p-datatable-tbody > tr > td) {
+    padding-top: 0.85rem;
+    padding-bottom: 0.85rem;
+}
+
 /* Dark-mode overrides. Wrapping an element in the "dark-scope" class
    (applied only when the app theme is dark) lets these rules repaint
    PrimeVue internals and Tailwind utility classes without touching the

@@ -118,6 +118,17 @@ class ActivityLogService
     // itself. See ChangePasswordController::update().
     public const PASSWORD_CHANGED = 'PASSWORD_CHANGED';
 
+    // Faculty login accounts (FacultyAccountController /
+    // FacultyInviteController): an account was created for a Faculty
+    // record, its set-password invitation was (re)sent or a one-time
+    // link was generated, and the faculty member finished setting
+    // their own password.
+    public const FACULTY_ACCOUNT_CREATED = 'FACULTY_ACCOUNT_CREATED';
+
+    public const FACULTY_INVITE_SENT = 'FACULTY_INVITE_SENT';
+
+    public const FACULTY_ACCOUNT_ACTIVATED = 'FACULTY_ACCOUNT_ACTIVATED';
+
     /**
      * Every action code above, for the Activity Log tab's filter
      * dropdown — kept in one place so it can never drift out of sync
@@ -156,6 +167,9 @@ class ActivityLogService
             self::PASSWORD_RESET_REQUESTED,
             self::PASSWORD_CHANGE_REQUIRED,
             self::PASSWORD_CHANGED,
+            self::FACULTY_ACCOUNT_CREATED,
+            self::FACULTY_INVITE_SENT,
+            self::FACULTY_ACCOUNT_ACTIVATED,
         ];
     }
 

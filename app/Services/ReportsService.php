@@ -14,6 +14,7 @@ use App\Models\Semester;
 use App\Models\Subject;
 use App\Services\FacultyWorkloadService;
 use App\Services\RoomUtilizationService;
+use App\Support\SubjectPlacementGrouping;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -144,10 +145,11 @@ class ReportsService
         // instead inflated e.g. a 9-subject section to "13 Scheduled"
         // whenever 4 of its subjects were split — disagreeing with the
         // Sections page's "9/9 Fully Scheduled" for the exact same
-        // section. A subject-group only counts as Scheduled once EVERY
-        // one of its component rows is individually Scheduled.
-        $subjectGroups = $sectionSubjects->groupBy(fn (SectionSubject $ss) => $ss->section_id.'-'.$ss->subject_id);
-        $groupIsScheduled = fn ($group) => $group->every(fn (SectionSubject $ss) => $ss->status === 'Scheduled');
+        // section. Delegated to SubjectPlacementGrouping — the same
+        // helper the Home dashboard and Scheduling page now use — so
+        // this definition of "one subject" can't drift apart again.
+        $subjectGroups = SubjectPlacementGrouping::group($sectionSubjects);
+        $groupIsScheduled = fn ($group) => SubjectPlacementGrouping::isScheduled($group);
 
         $scheduled = $subjectGroups->filter($groupIsScheduled)->count();
         $total = $subjectGroups->count();
@@ -305,7 +307,14 @@ class ReportsService
 
         return SectionSubject::query()
             ->whereIn('section_id', $sectionIds)
-            ->with(['section.major', 'subject', 'faculty', 'room']);
+            // Day filter — keep only placements that meet on that day (days is a
+            // comma-separated list of Mon/Tue/..., and no token is a substring of
+            // another, so a LIKE match is exact).
+            ->when(
+                ! empty($filters['day']) && in_array($filters['day'], SchoolYear::ALL_DAYS, true),
+                fn ($q) => $q->where('days', 'like', '%'.$filters['day'].'%')
+            )
+            ->with(['section.major.department', 'subject', 'faculty', 'room']);
     }
 
     private function programName(SectionSubject|Section $row): string
@@ -438,6 +447,9 @@ class ReportsService
                     'Start' => $combined['Start'],
                     'End' => $combined['End'],
                     'Type' => $primary->section?->section_type,
+                    // College that owns the Section — the Grid view colors the
+                    // block by it (Settings -> College Colors). Not a real column.
+                    'CollegeId' => $primary->section?->collegeId(),
                     'Schedules' => $schedules->all(),
                 ];
             })
@@ -448,7 +460,7 @@ class ReportsService
         // single/multi-section print layouts below — never a real
         // column in the generic multi-report dump (which would try to
         // render its nested array as a table cell).
-        $result['columns'] = array_values(array_diff($result['columns'], ['Schedules']));
+        $result['columns'] = array_values(array_diff($result['columns'], ['Schedules', 'CollegeId']));
 
         // Multiple, explicitly-picked (possibly non-contiguous — e.g.
         // BSIT-1, BSIT-3, BSIT-4, skipping BSIT-2) sections: also hand
@@ -627,6 +639,9 @@ class ReportsService
                     'Start' => $combined['Start'],
                     'End' => $combined['End'],
                     'Units' => $primary->subject?->units,
+                    // College that owns the Section — the Grid view colors the
+                    // block by it (Settings -> College Colors). Not a real column.
+                    'CollegeId' => $primary->section?->collegeId(),
                     'Schedules' => $schedules->all(),
                 ];
             })
@@ -637,7 +652,7 @@ class ReportsService
         // single/multi-faculty print layouts below — never a real
         // column in the generic multi-report dump (which would try to
         // render its nested array as a table cell).
-        $result['columns'] = array_values(array_diff($result['columns'], ['Schedules']));
+        $result['columns'] = array_values(array_diff($result['columns'], ['Schedules', 'CollegeId']));
 
         // Single, explicitly-picked faculty: hand the Vue page enough to
         // drive the "Send via Email" button (Faculty Schedule Email
@@ -738,10 +753,15 @@ class ReportsService
                 'Start' => $this->formatTime12h($ss->start_time),
                 'End' => $this->formatTime12h($ss->end_time),
                 'Room Capacity' => $ss->room?->capacity,
+                // Owning College of the Section — Grid view block color (not a real column).
+                'CollegeId' => $ss->section?->collegeId(),
             ];
         });
 
-        return $this->table('Schedule by Room', $rows);
+        $result = $this->table('Schedule by Room', $rows);
+        $result['columns'] = array_values(array_diff($result['columns'], ['CollegeId']));
+
+        return $result;
     }
 
     private function unscheduledSubjects(array $filters): array
@@ -1251,8 +1271,14 @@ class ReportsService
 
     private function sectionsOverview(array $filters): array
     {
-        $rows = $this->sectionsQuery($filters)->withCount('sectionSubjects')->get()->map(function (Section $section) {
-            $scheduled = $section->sectionSubjects()->where('status', 'Scheduled')->count();
+        // PERFORMANCE (N+1) — the Scheduled count used to be a separate
+        // query per section; withCount computes both counts in the one
+        // sections query.
+        $rows = $this->sectionsQuery($filters)->withCount([
+            'sectionSubjects',
+            'sectionSubjects as scheduled_subjects_count' => fn ($q) => $q->where('status', 'Scheduled'),
+        ])->get()->map(function (Section $section) {
+            $scheduled = (int) $section->scheduled_subjects_count;
 
             return [
                 'Section' => $section->section_code,
@@ -1277,10 +1303,17 @@ class ReportsService
     {
         $sections = $this->sectionsQuery($filters)->withCount('sectionSubjects')->get();
 
+        // PERFORMANCE (N+1) — one query for every section's placements,
+        // grouped in memory, instead of one query per program/year group.
+        $placementsBySection = SectionSubject::query()
+            ->whereIn('section_id', $sections->pluck('id'))
+            ->get(['id', 'section_id', 'status'])
+            ->groupBy('section_id');
+
         $rows = $sections->groupBy(fn (Section $s) => $this->programName($s).'|'.$s->year_level)
-            ->map(function (Collection $group) {
+            ->map(function (Collection $group) use ($placementsBySection) {
                 $first = $group->first();
-                $subjectIds = SectionSubject::query()->whereIn('section_id', $group->pluck('id'))->get();
+                $subjectIds = $group->flatMap(fn (Section $s) => $placementsBySection->get($s->id, collect()));
 
                 return [
                     'Program' => $this->programName($first),
@@ -1584,15 +1617,14 @@ class ReportsService
             ? $row['Schedules']
             : [['Room' => $row['Room'] ?? null, 'Day' => $row['Day'] ?? null, 'Start' => $row['Start'] ?? null, 'End' => $row['End'] ?? null]];
 
-        $present = [];
-        foreach ($rows as $row) {
-            foreach ($rowSchedules($row) as $schedule) {
-                foreach (array_filter(array_map('trim', explode(',', $schedule['Day'] ?? ''))) as $day) {
-                    $present[$day] = true;
-                }
-            }
+        // Every scheduling day from Term Setup (Available Days for the School
+        // Year, e.g. Mon-Sat) — not just the days that happen to have classes —
+        // so the grid always matches Term Setup, same as Reports/Index.vue.
+        $days = array_values($allDays);
+        // Day filter on: only that day's column, same as Index.vue's gridDays.
+        if (! empty($schedulingWindow['only_day']) && in_array($schedulingWindow['only_day'], $days, true)) {
+            $days = [$schedulingWindow['only_day']];
         }
-        $days = array_values(array_filter($allDays, fn ($d) => isset($present[$d])));
 
         $blocks = [];
         foreach ($rows as $row) {
@@ -1641,6 +1673,28 @@ class ReportsService
             $mergedBlocks[] = $block;
         }
 
+        // College color per block (Settings -> College Colors) — same look as
+        // the on-screen grid (resources/js/composables/useCollegeColors.js):
+        // a 22% tint of the college color as the fill, the full color as the
+        // border, and a darkened version for the text. Blended over white
+        // into solid rgb() values rather than rgba, so it prints reliably.
+        $collegeColors = \App\Models\College::colorMap();
+        $collegeSoftColors = function (?int $collegeId) use ($collegeColors): array {
+            $hex = $collegeId !== null ? ($collegeColors[$collegeId] ?? '#64748B') : '#64748B';
+            if (! preg_match('/^#[0-9a-f]{6}$/i', $hex)) {
+                $hex = '#64748B';
+            }
+            [$r, $g, $b] = [hexdec(substr($hex, 1, 2)), hexdec(substr($hex, 3, 2)), hexdec(substr($hex, 5, 2))];
+            $tint = fn (int $c): int => (int) round(255 * 0.78 + $c * 0.22);
+            $dark = fn (int $c): int => (int) round($c * 0.38);
+
+            return [
+                'border' => strtoupper($hex),
+                'bg' => sprintf('rgb(%d, %d, %d)', $tint($r), $tint($g), $tint($b)),
+                'text' => sprintf('rgb(%d, %d, %d)', $dark($r), $dark($g), $dark($b)),
+            ];
+        };
+
         // Grid cell label lines — Room report shows Subject/Section/
         // Faculty; Faculty report shows Subject/Section/Room, same as
         // Index.vue's gridCellLabel().
@@ -1656,6 +1710,7 @@ class ReportsService
                 $block['line3'] = ! empty($block['merged']) ? (($block['Room'] ?? '').'/Merge') : ($block['Room'] ?? null);
             }
             $block['online'] = $isOnline;
+            $block['colors'] = $collegeSoftColors($block['CollegeId'] ?? null);
         }
         unset($block);
 

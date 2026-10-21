@@ -90,6 +90,12 @@ class HandleInertiaRequests extends Middleware
                 // unrestricted/Assistant Dean roles). Lets the
                 // frontend show "no College assigned" messaging (spec
                 // Section 26) without re-deriving the role logic.
+                // True when this login is linked to a Faculty record (e.g.
+                // an OIC/Registrar who also teaches). Lets the sidebar show
+                // a "My Schedule" link to people who have other roles too.
+                'hasFacultyRecord' => fn () => $user
+                    ? \App\Models\Faculty::query()->where('user_id', $user->id)->exists()
+                    : false,
                 'collegeId' => fn () => \App\Support\AccessScope::collegeId($user),
                 'hasNoAssignedCollege' => fn () => \App\Support\AccessScope::hasNoAssignedCollege($user),
             ],
@@ -114,6 +120,12 @@ class HandleInertiaRequests extends Middleware
                 // Same per-row failure detail for the Room Master's
                 // Bulk Import — see RoomController::import().
                 'roomImportErrors' => fn () => $request->session()->get('roomImportErrors'),
+                // Faculty LOGIN accounts — see FacultyAccountController:
+                // rows skipped by "Generate Accounts" (with reasons), and a
+                // one-time set-password link for the "Copy invite link"
+                // fallback.
+                'accountSkips' => fn () => $request->session()->get('accountSkips'),
+                'inviteLink' => fn () => $request->session()->get('inviteLink'),
             ],
             // The currently Active Academic Term (School Year +
             // Semester) — the real, system-wide one, unaffected by
@@ -192,6 +204,10 @@ class HandleInertiaRequests extends Middleware
             // defaults (config('app.name') / null logo) when nothing
             // has been configured yet, so nothing ever errors or shows
             // a broken image.
+            // COLLEGE COLORS — {college_id => '#RRGGBB'}, set in Settings ->
+            // College Colors. Cached (see College::colorMap()) so this adds no
+            // query on normal page loads. Read by Room Grid / Section Grid.
+            'collegeColors' => fn () => \App\Models\College::colorMap(),
             'schoolBranding' => fn () => (function () {
                 $settings = app(SettingsService::class)->group('general');
 

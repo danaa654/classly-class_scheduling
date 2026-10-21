@@ -4,16 +4,14 @@ import { ref, computed, watch } from 'vue';
 import Swal from 'sweetalert2';
 import { useToast } from 'primevue/usetoast';
 import AppLayout from '@/Layouts/AppLayout.vue';
-import Card from 'primevue/card';
-import Toolbar from 'primevue/toolbar';
+import PageHeader from '@/Components/PageHeader.vue';
 import InputText from 'primevue/inputtext';
 import InputNumber from 'primevue/inputnumber';
 import Textarea from 'primevue/textarea';
 import Button from 'primevue/button';
-import DataTable from 'primevue/datatable';
-import Column from 'primevue/column';
 import Tag from 'primevue/tag';
 import Dialog from 'primevue/dialog';
+import Paginator from 'primevue/paginator';
 import Select from 'primevue/select';
 import Checkbox from 'primevue/checkbox';
 import FloatLabel from 'primevue/floatlabel';
@@ -63,10 +61,54 @@ const statusOptions = [
     { label: 'Archived', value: 'Archived' },
 ];
 
-const statusSeverity = (status) => {
-    if (status === 'Active') return 'success';
-    if (status === 'Archived') return 'warn';
-    return 'secondary'; // Draft
+// The College a curriculum belongs to (major -> department -> college)
+// and its color — the same color the Room Grid / Section Grid use.
+// The row's left edge takes this color; with no college/color on file
+// it falls back to the status color from statusTheme().
+const collegeOf = (row) => row.major?.department?.college ?? null;
+const collegeColor = (row) => {
+    const color = collegeOf(row)?.color;
+    return /^#[0-9a-f]{6}$/i.test(color ?? '') ? color : null;
+};
+const collegeEdgeStyle = (row) => {
+    const color = row.deleted_at ? null : collegeColor(row);
+    return color ? { borderLeftColor: color } : {};
+};
+
+// Row colors by status: Active = green, Draft (planning) = yellow,
+// Archived = grey, Deleted = red.
+const statusTheme = (row) => {
+    const d = isDark.value;
+    if (row.deleted_at) {
+        return {
+            label: 'Deleted',
+            edge: 'border-l-red-500',
+            card: d ? 'bg-red-500/10 ring-1 ring-red-500/30' : 'bg-red-50 ring-1 ring-red-200',
+            pill: d ? 'bg-red-500/20 text-red-300' : 'bg-red-100 text-red-700',
+        };
+    }
+    if (row.status === 'Active') {
+        return {
+            label: 'Active',
+            edge: 'border-l-emerald-500',
+            card: d ? 'bg-emerald-500/10 ring-1 ring-emerald-500/30' : 'bg-emerald-50 ring-1 ring-emerald-200',
+            pill: d ? 'bg-emerald-500/20 text-emerald-300' : 'bg-emerald-200/70 text-emerald-800',
+        };
+    }
+    if (row.status === 'Archived') {
+        return {
+            label: 'Archived',
+            edge: d ? 'border-l-slate-500' : 'border-l-slate-400',
+            card: d ? 'bg-white/5 ring-1 ring-white/10' : 'bg-slate-100 ring-1 ring-slate-200',
+            pill: d ? 'bg-white/10 text-slate-300' : 'bg-slate-200 text-slate-700',
+        };
+    }
+    return {
+        label: row.status,
+        edge: 'border-l-yellow-400',
+        card: d ? 'bg-yellow-500/10 ring-1 ring-yellow-500/30' : 'bg-yellow-50 ring-1 ring-yellow-200',
+        pill: d ? 'bg-yellow-500/20 text-yellow-300' : 'bg-yellow-200/80 text-yellow-900',
+    };
 };
 
 const majorOptions = computed(() =>
@@ -384,20 +426,10 @@ const onRestore = (curriculum) => {
             <span class="text-lg font-semibold" :class="isDark ? 'text-white' : 'text-[#1E293B]'">Curriculum</span>
         </template>
 
-        <div class="max-w-7xl mx-auto w-full" :class="isDark ? 'dark-scope' : ''">
+        <div class="w-full" :class="isDark ? 'dark-scope' : ''">
             <!-- Page Title -->
-            <div class="neu-card neu-spotlight relative mb-8 overflow-hidden rounded-2xl">
-                <div class="pointer-events-none absolute inset-0 overflow-hidden rounded-2xl">
-                    <div class="absolute inset-0" :class="isDark ? 'bg-gradient-to-br from-blue-500/10 via-transparent to-red-500/10' : 'bg-gradient-to-br from-blue-50 via-transparent to-red-50/60'"></div>
-                    <div class="absolute -right-10 -top-16 h-44 w-44 rounded-full bg-gradient-to-br" :class="isDark ? 'from-blue-500/20 via-blue-500/5 to-transparent' : 'from-blue-200/80 via-blue-100/40 to-transparent'"></div>
-                    <div class="absolute -bottom-20 right-16 h-40 w-40 rounded-full bg-gradient-to-tr" :class="isDark ? 'from-red-500/20 via-red-500/5 to-transparent' : 'from-red-200/70 via-red-100/30 to-transparent'"></div>
-                    <div class="absolute -left-10 bottom-0 h-28 w-28 rounded-full bg-gradient-to-tr border-4" :class="isDark ? 'from-blue-500/10 to-transparent border-blue-400/10' : 'from-blue-100/60 to-transparent border-blue-100'"></div>
-                    <div class="absolute left-[38%] top-0 h-3 w-3 rounded-full bg-gradient-to-br" :class="isDark ? 'from-red-400/50 to-blue-400/30' : 'from-red-400/80 to-blue-300/60'"></div>
-                    <div class="absolute left-[55%] bottom-4 h-20 w-20 rounded-full bg-gradient-to-r blur-xl" :class="isDark ? 'from-blue-500/10 to-red-500/10' : 'from-blue-200/40 to-red-200/40'"></div>
-                </div>
-                <div class="relative rounded-2xl p-6 transition-colors duration-300">
-                <h1 class="text-2xl font-bold tracking-tight flex items-center gap-2" :class="isDark ? 'text-white' : 'text-[#1E293B]'">
-                    Curriculum
+            <PageHeader title="Curriculum" subtitle="Manage the academic plans (subjects offered per Major) used across school years." icon="pi pi-book" tone="green" :count="curriculums.total" count-label="curriculums">
+                <template #info>
                     <InfoPopover
                         title="Curriculum"
                         :paragraphs="[
@@ -409,221 +441,166 @@ const onRestore = (curriculum) => {
                             'Removing a Subject from a Curriculum does not remove it from Sections already scheduled under an older version.',
                         ]"
                     />
-                </h1>
-                <p class="mt-1" :class="isDark ? 'text-slate-400' : 'text-slate-500'">
-                    Manage the academic plans (subjects offered per Major) used across school years.
-                </p>
-                </div>
-            </div>
-
-            <div class="neu-card rounded-2xl transition-colors duration-300">
-            <Card
-                class="!rounded-2xl !bg-transparent !border-0 !shadow-none"
-                :pt="{ body: { class: '!bg-transparent' } }"
-            >
-                <template #content>
-                    <!-- Top Toolbar -->
-                    <Toolbar class="!bg-transparent !border-0 !px-0 !pt-0 !pb-4 flex-wrap gap-3">
-                        <template #start>
-                            <span class="relative w-full sm:w-80">
-                                <i class="pi pi-search absolute left-3 top-1/2 -translate-y-1/2 text-sm" :class="isDark ? 'text-slate-500' : 'text-slate-400'"></i>
-                                <InputText
-                                    v-uppercase
-                                    v-model="search"
-                                    placeholder="Search by code, name, major or start/end year"
-                                    class="neu-inset w-full !rounded-xl !border-none !pl-9"
-                                    :class="isDark ? '!text-white placeholder:!text-slate-500' : ''"
-                                />
-                            </span>
-                            <Select
-                                v-model="selectedCollegeId"
-                                :options="collegeFilterOptions"
-                                optionLabel="label"
-                                optionValue="value"
-                                placeholder="All Colleges"
-                                class="w-full sm:w-52"
-                                :pt="{ overlay: { class: isDark ? 'dark-scope' : '' } }"
-                                @change="onCollegeFilterChange"
-                            />
-                            <Select
-                                v-model="selectedMajorId"
-                                :options="majorFilterOptions"
-                                optionLabel="label"
-                                optionValue="value"
-                                placeholder="All Programs"
-                                filter
-                                class="w-full sm:w-56"
-                                :pt="{ overlay: { class: isDark ? 'dark-scope' : '' } }"
-                                @change="onFilterChange"
-                            />
-                            <Select
-                                v-model="selectedCurriculumYear"
-                                :options="curriculumYearFilterOptions"
-                                optionLabel="label"
-                                optionValue="value"
-                                placeholder="All Curriculum Years"
-                                class="w-full sm:w-52"
-                                :pt="{ overlay: { class: isDark ? 'dark-scope' : '' } }"
-                                @change="onFilterChange"
-                            />
-                        </template>
-                        <template #end>
-                            <div class="flex items-center gap-2">
-                                <Button
-                                    icon="pi pi-refresh"
-                                    severity="secondary"
-                                    text
-                                    class="neu-icon-well !rounded-full"
-                                    :loading="loading"
-                                    @click="onRefresh"
-                                    aria-label="Refresh"
-                                />
-                                <Button label="Add Curriculum" icon="pi pi-plus" @click="openAdd" />
-                            </div>
-                        </template>
-                    </Toolbar>
-
-                    <!-- Active Filter Indicator -->
-                    <div v-if="hasActiveFilters" class="flex flex-wrap items-center gap-2 pb-4 -mt-2">
-                        <span class="text-xs font-medium text-slate-500">Filters ({{ activeFilterChips.length }})</span>
-                        <Tag
-                            v-for="chip in activeFilterChips"
-                            :key="chip.key"
-                            severity="secondary"
-                            class="!cursor-pointer"
-                            @click="removeFilterChip(chip.key)"
-                        >
-                            <span class="flex items-center gap-1">
-                                {{ chip.label }}
-                                <i class="pi pi-times text-[10px]"></i>
-                            </span>
-                        </Tag>
-                        <Button
-                            label="Clear Filters"
-                            size="small"
-                            text
-                            severity="secondary"
-                            class="!py-1 !px-2 !text-xs"
-                            @click="clearFilters"
-                        />
-                    </div>
-
-                    <!-- Curriculums Table -->
-                    <LoadingSkeleton v-if="loading && !curriculums.data.length" variant="table" :rows="8" :columns="5" />
-                    <DataTable
-                        v-else
-                        :value="curriculums.data"
-                        :loading="loading"
-                        dataKey="id"
-                        class="neu-inset neu-table rounded-xl overflow-hidden"
-                        :class="isDark ? 'neu-table-dark' : ''"
-                        stripedRows
-                        responsiveLayout="scroll"
-                        lazy
-                        paginator
-                        :rows="curriculums.per_page"
-                        :totalRecords="curriculums.total"
-                        :first="(curriculums.current_page - 1) * curriculums.per_page"
-                        @page="onPage"
-                    >
-                        <template #empty>
-                            <div class="text-center py-10">
-                                <p class="text-slate-500 font-medium">No curriculums found.</p>
-                                <p v-if="hasActiveFilters" class="text-slate-400 text-sm mt-1">
-                                    Try changing or clearing your filters.
-                                </p>
-                                <Button
-                                    v-if="hasActiveFilters"
-                                    label="Clear Filters"
-                                    icon="pi pi-filter-slash"
-                                    severity="secondary"
-                                    outlined
-                                    class="mt-3"
-                                    @click="clearFilters"
-                                />
-                                <Button
-                                    v-else
-                                    label="Add Curriculum"
-                                    icon="pi pi-plus"
-                                    class="mt-3"
-                                    @click="openAdd"
-                                />
-                            </div>
-                        </template>
-
-                        <Column field="code" header="Code" style="width: 10rem" />
-                        <Column field="name" header="Curriculum" />
-                        <Column header="Major" style="width: 16rem">
-                            <template #body="{ data }">
-                                {{ data.major?.name || '—' }}
-                            </template>
-                        </Column>
-                        <Column header="Duration" style="width: 10rem">
-                            <template #body="{ data }">
-                                {{ data.start_year }} - {{ data.end_year }}
-                            </template>
-                        </Column>
-                        <Column header="Status" style="width: 9rem">
-                            <template #body="{ data }">
-                                <Tag v-if="data.deleted_at" value="Deleted" severity="danger" />
-                                <Tag v-else :value="data.status" :severity="statusSeverity(data.status)" />
-                            </template>
-                        </Column>
-                        <Column header="Allow New Students" style="width: 10rem">
-                            <template #body="{ data }">
-                                <Tag
-                                    :value="data.allow_new_students ? 'Yes' : 'No'"
-                                    :severity="data.allow_new_students ? 'success' : 'secondary'"
-                                />
-                            </template>
-                        </Column>
-                        <Column header="Actions" style="width: 16rem">
-                            <template #body="{ data }">
-                                <div class="flex gap-1">
-                                    <template v-if="!data.deleted_at">
-                                        <Button
-                                            icon="pi pi-list"
-                                            label="Manage Subjects"
-                                            text
-                                            severity="info"
-                                            size="small"
-                                            @click="router.visit(route('curriculums.subjects', data.id))"
-                                        />
-                                        <Button
-                                            icon="pi pi-pencil"
-                                            text
-                                            rounded
-                                            severity="secondary"
-                                            size="small"
-                                            aria-label="Edit"
-                                            @click="openEdit(data)"
-                                        />
-                                        <Button
-                                            icon="pi pi-trash"
-                                            text
-                                            rounded
-                                            severity="danger"
-                                            size="small"
-                                            aria-label="Delete"
-                                            @click="onDelete(data)"
-                                        />
-                                    </template>
-                                    <Button
-                                        v-else
-                                        icon="pi pi-refresh"
-                                        text
-                                        rounded
-                                        severity="success"
-                                        size="small"
-                                        label="Restore"
-                                        @click="onRestore(data)"
-                                    />
-                                </div>
-                            </template>
-                        </Column>
-                    </DataTable>
                 </template>
-            </Card>
+            </PageHeader>
+
+            <div class="neu-card rounded-2xl p-4 transition-colors duration-300">
+                <!-- Search + filters -->
+                <div class="mb-3 flex flex-wrap items-center gap-2">
+                    <span class="relative w-full sm:w-72">
+                        <i class="pi pi-search absolute left-3 top-1/2 -translate-y-1/2 text-sm" :class="isDark ? 'text-slate-500' : 'text-slate-400'"></i>
+                        <InputText
+                            v-uppercase
+                            v-model="search"
+                            placeholder="Search code, name, major or year"
+                            class="neu-inset w-full !rounded-xl !border-none !pl-9"
+                            :class="isDark ? '!text-white placeholder:!text-slate-500' : ''"
+                        />
+                    </span>
+                    <Select
+                        v-model="selectedCollegeId"
+                        :options="collegeFilterOptions"
+                        optionLabel="label"
+                        optionValue="value"
+                        placeholder="All Colleges"
+                        class="w-full sm:w-48"
+                        :pt="{ overlay: { class: isDark ? 'dark-scope' : '' } }"
+                        @change="onCollegeFilterChange"
+                    />
+                    <Select
+                        v-model="selectedMajorId"
+                        :options="majorFilterOptions"
+                        optionLabel="label"
+                        optionValue="value"
+                        placeholder="All Programs"
+                        filter
+                        class="w-full sm:w-56"
+                        :pt="{ overlay: { class: isDark ? 'dark-scope' : '' } }"
+                        @change="onFilterChange"
+                    />
+                    <Select
+                        v-model="selectedCurriculumYear"
+                        :options="curriculumYearFilterOptions"
+                        optionLabel="label"
+                        optionValue="value"
+                        placeholder="All Curriculum Years"
+                        class="w-full sm:w-48"
+                        :pt="{ overlay: { class: isDark ? 'dark-scope' : '' } }"
+                        @change="onFilterChange"
+                    />
+                    <div class="ml-auto flex items-center gap-2">
+                        <Button
+                            icon="pi pi-refresh"
+                            severity="secondary"
+                            text
+                            class="neu-icon-well !rounded-full"
+                            :loading="loading"
+                            @click="onRefresh"
+                            aria-label="Refresh"
+                        />
+                        <Button label="Add curriculum" icon="pi pi-plus" @click="openAdd" />
+                    </div>
+                </div>
+
+                <!-- Active Filter Indicator -->
+                <div v-if="hasActiveFilters" class="mb-3 flex flex-wrap items-center gap-2">
+                    <span class="text-xs font-medium text-slate-500">Filters ({{ activeFilterChips.length }})</span>
+                    <Tag
+                        v-for="chip in activeFilterChips"
+                        :key="chip.key"
+                        severity="secondary"
+                        class="!cursor-pointer"
+                        @click="removeFilterChip(chip.key)"
+                    >
+                        <span class="flex items-center gap-1">
+                            {{ chip.label }}
+                            <i class="pi pi-times text-[10px]"></i>
+                        </span>
+                    </Tag>
+                    <Button label="Clear filters" size="small" text severity="secondary" class="!py-1 !px-2 !text-xs" @click="clearFilters" />
+                </div>
+
+                <LoadingSkeleton v-if="loading && !curriculums.data.length" variant="table" :rows="8" :columns="5" />
+
+                <!-- Empty state -->
+                <div v-else-if="!curriculums.data.length" class="py-12 text-center">
+                    <i class="pi pi-book text-4xl" :class="isDark ? 'text-slate-600' : 'text-slate-300'"></i>
+                    <p class="mt-3 font-medium" :class="isDark ? 'text-slate-300' : 'text-slate-600'">
+                        {{ hasActiveFilters || search ? 'No curriculums match.' : 'No curriculums yet.' }}
+                    </p>
+                    <p class="mt-1 text-sm" :class="isDark ? 'text-slate-500' : 'text-slate-400'">
+                        {{ hasActiveFilters || search ? 'Try changing or clearing your filters.' : 'Add a curriculum to define the subjects offered for a major.' }}
+                    </p>
+                    <Button v-if="hasActiveFilters" label="Clear filters" icon="pi pi-filter-slash" severity="secondary" outlined class="mt-4" @click="clearFilters" />
+                    <Button v-else-if="!search" label="Add curriculum" icon="pi pi-plus" class="mt-4" @click="openAdd" />
+                </div>
+
+                <ul v-else class="space-y-2" :class="loading ? 'opacity-60 transition-opacity' : ''">
+                    <li
+                        v-for="row in curriculums.data"
+                        :key="row.id"
+                        class="grid items-center gap-x-4 gap-y-2 rounded-xl border-l-4 px-4 py-3 lg:grid-cols-[minmax(0,5fr)_minmax(0,4fr)_auto]"
+                        :class="[statusTheme(row).edge, statusTheme(row).card, row.deleted_at ? 'opacity-75' : '']"
+                        :style="collegeEdgeStyle(row)"
+                    >
+                        <!-- Name, code, major -->
+                        <div class="min-w-0">
+                            <p class="break-words text-[15px] font-semibold leading-snug" :class="isDark ? 'text-white' : 'text-[#1E293B]'">{{ row.name }}</p>
+                            <p class="mt-0.5 flex flex-wrap items-center gap-x-2 text-xs" :class="isDark ? 'text-slate-400' : 'text-slate-500'">
+                                <span v-if="collegeOf(row)" class="inline-flex items-center gap-1 font-semibold" :title="collegeOf(row).name">
+                                    <span class="h-2 w-2 rounded-full" :style="{ backgroundColor: collegeColor(row) }"></span>
+                                    {{ collegeOf(row).code || collegeOf(row).short_name }}
+                                </span>
+                                <span class="break-words">{{ row.major?.name || 'No major' }}</span>
+                            </p>
+                            <p class="mt-0.5 text-xs font-medium tabular-nums" :class="isDark ? 'text-slate-500' : 'text-slate-400'">{{ row.code }}</p>
+                        </div>
+
+                        <!-- Duration, status, admissions -->
+                        <div class="flex flex-wrap items-center gap-1.5">
+                            <span class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-semibold tabular-nums" :class="isDark ? 'bg-white/10 text-slate-200' : 'bg-white/80 text-slate-700 ring-1 ring-slate-200'">
+                                <i class="pi pi-calendar text-[10px]"></i>
+                                {{ row.start_year }} – {{ row.end_year }}
+                            </span>
+                            <span class="rounded-full px-2.5 py-0.5 text-xs font-semibold" :class="statusTheme(row).pill">{{ statusTheme(row).label }}</span>
+                            <span
+                                class="inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold"
+                                :class="row.allow_new_students
+                                    ? (isDark ? 'bg-sky-500/20 text-sky-300' : 'bg-sky-100 text-sky-700')
+                                    : (isDark ? 'bg-white/10 text-slate-400' : 'bg-slate-200/70 text-slate-500')"
+                            >
+                                <i :class="row.allow_new_students ? 'pi pi-user-plus' : 'pi pi-lock'" class="text-[10px]"></i>
+                                {{ row.allow_new_students ? 'Open to new students' : 'Closed to new students' }}
+                            </span>
+                        </div>
+
+                        <!-- Actions -->
+                        <div class="flex items-center gap-1 lg:justify-end">
+                            <template v-if="!row.deleted_at">
+                                <Button
+                                    label="Manage subjects"
+                                    icon="pi pi-list"
+                                    size="small"
+                                    outlined
+                                    @click="router.visit(route('curriculums.subjects', row.id))"
+                                />
+                                <Button icon="pi pi-pencil" text rounded severity="secondary" size="small" aria-label="Edit curriculum" title="Edit" @click="openEdit(row)" />
+                                <Button icon="pi pi-trash" text rounded severity="danger" size="small" aria-label="Delete curriculum" title="Delete" @click="onDelete(row)" />
+                            </template>
+                            <Button v-else icon="pi pi-refresh" label="Restore" text severity="success" size="small" @click="onRestore(row)" />
+                        </div>
+                    </li>
+                </ul>
+
+                <Paginator
+                    v-if="curriculums.total > curriculums.per_page"
+                    class="!mt-4 !bg-transparent"
+                    template="PrevPageLink PageLinks NextPageLink"
+                    :rows="curriculums.per_page"
+                    :totalRecords="curriculums.total"
+                    :first="(curriculums.current_page - 1) * curriculums.per_page"
+                    @page="onPage"
+                />
             </div>
         </div>
 
@@ -838,4 +815,8 @@ const onRestore = (curriculum) => {
 .dark-scope :deep(.p-menu) { background: #0F1730 !important; border-color: rgba(255, 255, 255, 0.1) !important; color: #F8FAFC !important; }
 .dark-scope :deep(.p-menu .p-menu-item-link) { color: #E2E8F0 !important; }
 .dark-scope :deep(.p-menu .p-menu-item-link:hover) { background: rgba(255, 255, 255, 0.06) !important; }
+.dark-scope :deep(.p-paginator-page),
+.dark-scope :deep(.p-paginator-prev),
+.dark-scope :deep(.p-paginator-next) { color: #CBD5E1 !important; }
+.dark-scope :deep(.p-paginator-page.p-paginator-page-selected) { background: rgba(96, 165, 250, 0.2) !important; color: #BFDBFE !important; }
 </style>

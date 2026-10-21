@@ -64,6 +64,53 @@ class FacultyWorkloadService
     public const WARNING_THRESHOLD = 85;
 
     /**
+     * Placements for a whole candidate pool, loaded once while
+     * withPreloadedPlacements() is running (null the rest of the time,
+     * so no read ever sees data older than the current evaluation).
+     *
+     * @var array{faculty_ids: array<int, int>, rows: \Illuminate\Support\Collection}|null
+     */
+    private ?array $preloadedPlacements = null;
+
+    /**
+     * Run $callback with every placement of every Faculty in $faculty
+     * preloaded in a single query, so per-candidate currentLoad()/
+     * wouldExceed()/assignedSubjectsCount() calls inside it cost zero
+     * extra queries. STRICTLY for read-only passes (ranking a candidate
+     * pool): the preload is dropped as soon as $callback returns, so a
+     * write that follows (Auto Generate saving a Draft row, then
+     * re-checking load for the next subject) always re-queries.
+     *
+     * @param  \Illuminate\Support\Collection<int, Faculty>  $faculty
+     */
+    public function withPreloadedPlacements($faculty, \Closure $callback): mixed
+    {
+        $facultyIds = $faculty->pluck('id')->all();
+        $previous = $this->preloadedPlacements;
+
+        if (! empty($facultyIds)) {
+            $this->preloadedPlacements = [
+                'faculty_ids' => array_flip($facultyIds),
+                'rows' => SectionSubject::query()
+                    ->whereIn('faculty_id', $facultyIds)
+                    ->whereIn('status', ['Scheduled', 'Draft'])
+                    ->whereIn('section_id', $this->conflictService->activeSemesterSectionIds())
+                    ->whereNull('merged_into_section_subject_id')
+                    ->with('subject:id,units,lecture_hours,laboratory_hours')
+                    ->get()
+                    ->filter(fn (SectionSubject $ss) => $ss->subject !== null)
+                    ->groupBy('faculty_id'),
+            ];
+        }
+
+        try {
+            return $callback();
+        } finally {
+            $this->preloadedPlacements = $previous;
+        }
+    }
+
+    /**
      * Every 'Scheduled'/'Draft' SectionSubject placement currently
      * assigned to this Faculty member, scoped to the active semester.
      * Loaded once and reused by both currentLoad() and
@@ -85,6 +132,21 @@ class FacultyWorkloadService
      */
     private function activePlacements(Faculty $faculty, int|array|null $excludingSectionSubjectId = null)
     {
+        // PERFORMANCE (N+1) — inside withPreloadedPlacements() every
+        // candidate's placements were already loaded in ONE query, so
+        // answer from memory (applying the same "exclude these ids"
+        // rule the SQL below applies) instead of querying per Faculty.
+        if ($this->preloadedPlacements !== null && isset($this->preloadedPlacements['faculty_ids'][$faculty->id])) {
+            $rows = $this->preloadedPlacements['rows']->get($faculty->id, collect());
+
+            if ($excludingSectionSubjectId) {
+                $excluded = (array) $excludingSectionSubjectId;
+                $rows = $rows->reject(fn (SectionSubject $ss) => in_array($ss->id, $excluded, true));
+            }
+
+            return $rows;
+        }
+
         return SectionSubject::query()
             ->where('faculty_id', $faculty->id)
             ->whereIn('status', ['Scheduled', 'Draft'])
@@ -313,7 +375,11 @@ class FacultyWorkloadService
             ->when($excludingSectionSubjectId, fn ($q) => $q->where('id', '!=', $excludingSectionSubjectId))
             ->with([
                 'subject:id,subject_code,subject_title,units,lecture_hours,laboratory_hours',
-                'section:id,section_code',
+                // major_id + section.major.department: only so collegeId() below can
+                // tell which College owns the Section (Faculty Details' Grid view
+                // colors each block by it — Settings -> College Colors).
+                'section:id,section_code,major_id',
+                'section.major.department',
                 'room:id,room_name',
                 // Every Irregular-section row merged into THIS one —
                 // riding along on the exact same class session, never
@@ -369,6 +435,7 @@ class FacultyWorkloadService
                     'requires_lab' => (int) $primary->subject->laboratory_hours > 0,
                     'required_hours' => ((int) $primary->subject->lecture_hours + (int) $primary->subject->laboratory_hours) ?: 3,
                     'section_code' => $sectionCodes->implode(' & '),
+                    'college_id' => $primary->section?->collegeId(),
                     // Group-level Status: 'Scheduled' only once EVERY
                     // row in the group is — mirrors
                     // Section::withSubjectProgressCounts()'s same

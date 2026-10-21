@@ -4,20 +4,17 @@ import { ref, computed, watch } from 'vue';
 import Swal from 'sweetalert2';
 import { useToast } from 'primevue/usetoast';
 import AppLayout from '@/Layouts/AppLayout.vue';
-import Card from 'primevue/card';
+import PageHeader from '@/Components/PageHeader.vue';
 import Tabs from 'primevue/tabs';
 import TabList from 'primevue/tablist';
 import Tab from 'primevue/tab';
 import TabPanels from 'primevue/tabpanels';
 import TabPanel from 'primevue/tabpanel';
-import Toolbar from 'primevue/toolbar';
 import InputText from 'primevue/inputtext';
 import Textarea from 'primevue/textarea';
 import Button from 'primevue/button';
-import DataTable from 'primevue/datatable';
-import Column from 'primevue/column';
-import Tag from 'primevue/tag';
 import Dialog from 'primevue/dialog';
+import Paginator from 'primevue/paginator';
 import Select from 'primevue/select';
 import FloatLabel from 'primevue/floatlabel';
 import Checkbox from 'primevue/checkbox';
@@ -65,6 +62,72 @@ const statusOptions = [
     { label: 'Active', value: 'Active' },
     { label: 'Inactive', value: 'Inactive' },
 ];
+
+/* ------------------------------------------------------------------ */
+/* Display helpers (list rows)                                          */
+/* ------------------------------------------------------------------ */
+
+// Remember which tab was open — saving in Departments/Majors redirects
+// back to this page, which used to snap back to Colleges every time.
+const TAB_KEY = 'academic-structure-tab';
+const VALID_TABS = ['colleges', 'departments', 'majors'];
+const readSavedTab = () => {
+    try {
+        const saved = sessionStorage.getItem(TAB_KEY);
+        return VALID_TABS.includes(saved) ? saved : 'colleges';
+    } catch {
+        return 'colleges';
+    }
+};
+const activeTab = ref(readSavedTab());
+watch(activeTab, (value) => {
+    try {
+        sessionStorage.setItem(TAB_KEY, value);
+    } catch {
+        /* storage unavailable — tab just won't be remembered */
+    }
+});
+
+// Code badge uses the owning College's own color (the same color the
+// Room Grid and Section Grid use), with white or dark text depending
+// on how light that color is. No color on file -> neutral slate.
+const badgeStyle = (hex) => {
+    const color = /^#[0-9a-f]{6}$/i.test(hex ?? '') ? hex : '#64748B';
+    const r = parseInt(color.slice(1, 3), 16);
+    const g = parseInt(color.slice(3, 5), 16);
+    const b = parseInt(color.slice(5, 7), 16);
+    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+
+    return { backgroundColor: color, color: luminance > 0.62 ? '#1E293B' : '#FFFFFF' };
+};
+
+// Active = green edge on a plain row (most rows are Active, so a full
+// green wash would just be noise); Inactive = yellow row; Deleted = red.
+const rowTheme = (row) => {
+    const d = isDark.value;
+    if (row.deleted_at) {
+        return {
+            label: 'Deleted',
+            edge: 'border-l-red-500',
+            card: d ? 'bg-red-500/10 ring-1 ring-red-500/30' : 'bg-red-50 ring-1 ring-red-200',
+            pill: d ? 'bg-red-500/20 text-red-300' : 'bg-red-100 text-red-700',
+        };
+    }
+    if (row.status === 'Active') {
+        return {
+            label: 'Active',
+            edge: 'border-l-emerald-500',
+            card: d ? 'bg-white/5 ring-1 ring-white/10' : 'bg-white ring-1 ring-slate-200/70',
+            pill: d ? 'bg-emerald-500/20 text-emerald-300' : 'bg-emerald-100 text-emerald-700',
+        };
+    }
+    return {
+        label: row.status,
+        edge: 'border-l-yellow-400',
+        card: d ? 'bg-yellow-500/10 ring-1 ring-yellow-500/30' : 'bg-yellow-50 ring-1 ring-yellow-200',
+        pill: d ? 'bg-yellow-500/20 text-yellow-300' : 'bg-yellow-200/80 text-yellow-900',
+    };
+};
 
 /* ------------------------------------------------------------------ */
 /* Colleges tab                                                        */
@@ -661,20 +724,10 @@ const onForceDeleteMajor = (major) => {
             <span class="text-lg font-semibold" :class="isDark ? 'text-white' : 'text-[#1E293B]'">Academic Structure</span>
         </template>
 
-        <div class="max-w-7xl mx-auto w-full" :class="isDark ? 'dark-scope' : ''">
+        <div class="w-full" :class="isDark ? 'dark-scope' : ''">
             <!-- Page Title -->
-            <div class="neu-card neu-spotlight relative mb-6 overflow-hidden rounded-2xl">
-                <div class="pointer-events-none absolute inset-0 overflow-hidden rounded-2xl">
-                    <div class="absolute inset-0" :class="isDark ? 'bg-gradient-to-br from-blue-500/10 via-transparent to-red-500/10' : 'bg-gradient-to-br from-blue-50 via-transparent to-red-50/60'"></div>
-                    <div class="absolute -right-10 -top-16 h-44 w-44 rounded-full bg-gradient-to-br" :class="isDark ? 'from-blue-500/20 via-blue-500/5 to-transparent' : 'from-blue-200/80 via-blue-100/40 to-transparent'"></div>
-                    <div class="absolute -bottom-20 right-16 h-40 w-40 rounded-full bg-gradient-to-tr" :class="isDark ? 'from-red-500/20 via-red-500/5 to-transparent' : 'from-red-200/70 via-red-100/30 to-transparent'"></div>
-                    <div class="absolute -left-10 bottom-0 h-28 w-28 rounded-full bg-gradient-to-tr border-4" :class="isDark ? 'from-blue-500/10 to-transparent border-blue-400/10' : 'from-blue-100/60 to-transparent border-blue-100'"></div>
-                    <div class="absolute left-[38%] top-0 h-3 w-3 rounded-full bg-gradient-to-br" :class="isDark ? 'from-red-400/50 to-blue-400/30' : 'from-red-400/80 to-blue-300/60'"></div>
-                    <div class="absolute left-[55%] bottom-4 h-20 w-20 rounded-full bg-gradient-to-r blur-xl" :class="isDark ? 'from-blue-500/10 to-red-500/10' : 'from-blue-200/40 to-red-200/40'"></div>
-                </div>
-                <div class="relative rounded-2xl p-6 transition-colors duration-300">
-                <h1 class="text-2xl font-bold tracking-tight flex items-center gap-2" :class="isDark ? 'text-white' : 'text-[#1E293B]'">
-                    Academic Structure
+            <PageHeader title="Academic Structure" subtitle="Manage colleges, departments, and majors." icon="pi pi-sitemap" tone="violet">
+                <template #info>
                     <InfoPopover
                         title="Academic Structure"
                         :paragraphs="[
@@ -686,445 +739,261 @@ const onForceDeleteMajor = (major) => {
                             'Renaming or removing an entry here can affect any Subjects, Sections, or Faculty already linked to it.',
                         ]"
                     />
-                </h1>
-                <p class="mt-1" :class="isDark ? 'text-slate-400' : 'text-slate-500'">
-                    Manage colleges, departments, and majors.
-                </p>
-                </div>
-            </div>
+                </template>
+            </PageHeader>
 
             <!-- Tabs -->
-            <Tabs value="colleges">
+            <Tabs v-model:value="activeTab">
                 <TabList>
-                    <Tab value="colleges">Colleges</Tab>
-                    <Tab value="departments">Departments</Tab>
-                    <Tab value="majors">Majors</Tab>
+                    <Tab value="colleges">Colleges<span class="ml-2 rounded-full px-2 py-0.5 text-xs font-semibold" :class="isDark ? 'bg-white/10 text-slate-300' : 'bg-slate-100 text-slate-600'">{{ colleges.total }}</span></Tab>
+                    <Tab value="departments">Departments<span class="ml-2 rounded-full px-2 py-0.5 text-xs font-semibold" :class="isDark ? 'bg-white/10 text-slate-300' : 'bg-slate-100 text-slate-600'">{{ departments.total }}</span></Tab>
+                    <Tab value="majors">Majors<span class="ml-2 rounded-full px-2 py-0.5 text-xs font-semibold" :class="isDark ? 'bg-white/10 text-slate-300' : 'bg-slate-100 text-slate-600'">{{ majors.total }}</span></Tab>
                 </TabList>
 
                 <TabPanels>
                     <!-- Colleges -->
                     <TabPanel value="colleges">
-                        <div class="neu-card rounded-2xl transition-colors duration-300 mt-4">
-                        <Card
-                            class="!rounded-2xl !bg-transparent !border-0 !shadow-none"
-                            :pt="{ body: { class: '!bg-transparent' } }"
-                        >
-                            <template #content>
-                                <!-- Top Toolbar -->
-                                <Toolbar class="!bg-transparent !border-0 !px-0 !pt-0 !pb-4 flex-wrap gap-3">
-                                    <template #start>
-                                        <span class="relative w-full sm:w-80">
-                                            <i class="pi pi-search absolute left-3 top-1/2 -translate-y-1/2 text-sm" :class="isDark ? 'text-slate-500' : 'text-slate-400'"></i>
-                                            <InputText
-                                                v-uppercase
-                                                v-model="collegeSearch"
-                                                placeholder="Search by code, name or short name"
-                                                class="neu-inset w-full !rounded-xl !border-none !pl-9"
-                                                :class="isDark ? '!text-white placeholder:!text-slate-500' : ''"
-                                            />
-                                        </span>
-                                    </template>
-                                    <template #end>
-                                        <div class="flex items-center gap-2">
-                                            <Button
-                                                icon="pi pi-refresh"
-                                                severity="secondary"
-                                                text
-                                                class="neu-icon-well !rounded-full"
-                                                :loading="collegeLoading"
-                                                @click="onRefreshColleges"
-                                                aria-label="Refresh"
-                                            />
-                                            <Button label="Add College" icon="pi pi-plus" @click="openAddCollege" />
-                                        </div>
-                                    </template>
-                                </Toolbar>
+                        <div class="neu-card mt-4 rounded-2xl p-4 transition-colors duration-300">
+                            <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
+                                <span class="relative w-full sm:w-96">
+                                    <i class="pi pi-search absolute left-3 top-1/2 -translate-y-1/2 text-sm" :class="isDark ? 'text-slate-500' : 'text-slate-400'"></i>
+                                    <InputText
+                                        v-uppercase
+                                        v-model="collegeSearch"
+                                        placeholder="Search by code, name or short name"
+                                        class="neu-inset w-full !rounded-xl !border-none !pl-9"
+                                        :class="isDark ? '!text-white placeholder:!text-slate-500' : ''"
+                                    />
+                                </span>
+                                <div class="flex items-center gap-2">
+                                    <Button icon="pi pi-refresh" severity="secondary" text class="neu-icon-well !rounded-full" :loading="collegeLoading" @click="onRefreshColleges" aria-label="Refresh" />
+                                    <Button label="Add college" icon="pi pi-plus" @click="openAddCollege" />
+                                </div>
+                            </div>
 
-                                <!-- Colleges Table -->
-                                <DataTable
-                                    :value="colleges.data"
-                                    :loading="collegeLoading"
-                                    dataKey="id"
-                                    class="neu-inset neu-table rounded-xl overflow-hidden"
-                                    :class="isDark ? 'neu-table-dark' : ''"
-                                    stripedRows
-                                    responsiveLayout="scroll"
-                                    lazy
-                                    paginator
-                                    :rows="colleges.per_page"
-                                    :totalRecords="colleges.total"
-                                    :first="(colleges.current_page - 1) * colleges.per_page"
-                                    @page="onCollegePage"
+                            <div v-if="!colleges.data.length" class="py-12 text-center">
+                                <i class="pi pi-building text-4xl" :class="isDark ? 'text-slate-600' : 'text-slate-300'"></i>
+                                <p class="mt-3 font-medium" :class="isDark ? 'text-slate-300' : 'text-slate-600'">
+                                    {{ collegeSearch ? 'No colleges match your search.' : 'No colleges yet.' }}
+                                </p>
+                                <p class="mt-1 text-sm" :class="isDark ? 'text-slate-500' : 'text-slate-400'">
+                                    {{ collegeSearch ? 'Try a different code or name.' : 'Add a college to start building your academic structure.' }}
+                                </p>
+                                <Button v-if="!collegeSearch" label="Add college" icon="pi pi-plus" class="mt-4" @click="openAddCollege" />
+                            </div>
+
+                            <ul v-else class="space-y-2" :class="collegeLoading ? 'opacity-60 transition-opacity' : ''">
+                                <li
+                                    v-for="row in colleges.data"
+                                    :key="row.id"
+                                    class="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border-l-4 px-3 py-2.5"
+                                    :class="[rowTheme(row).edge, rowTheme(row).card, row.deleted_at ? 'opacity-75' : '']"
                                 >
-                                    <template #empty>
-                                        <div class="text-center py-10">
-                                            <p class="text-slate-500 font-medium">No colleges found.</p>
-                                            <Button
-                                                label="Add College"
-                                                icon="pi pi-plus"
-                                                class="mt-3"
-                                                @click="openAddCollege"
-                                            />
-                                        </div>
-                                    </template>
+                                    <span
+                                        class="inline-flex min-w-[4.5rem] max-w-[11rem] items-center justify-center truncate rounded-lg px-2.5 py-1 text-xs font-bold tracking-wide"
+                                        :style="badgeStyle(row.color)"
+                                        :title="row.code"
+                                    >{{ row.code }}</span>
 
-                                    <Column field="code" header="Code" style="width: 10rem" />
-                                    <Column field="name" header="College Name" />
-                                    <Column field="short_name" header="Short Name" style="width: 12rem">
-                                        <template #body="{ data }">
-                                            {{ data.short_name || '—' }}
+                                    <div class="min-w-0 flex-1 basis-56">
+                                        <p class="break-words text-[15px] font-semibold leading-snug" :class="isDark ? 'text-white' : 'text-[#1E293B]'">{{ row.name }}</p>
+                                        <p class="mt-0.5 flex flex-wrap items-center gap-x-3 text-xs" :class="isDark ? 'text-slate-400' : 'text-slate-500'">
+                                            <span v-if="row.short_name">{{ row.short_name }}</span>
+                                            <span v-else class="italic opacity-70">No short name</span>
+                                        </p>
+                                    </div>
+
+                                    <div class="flex items-center gap-1.5">
+                                        <span v-if="row.counts_as_gened" class="rounded-full px-2.5 py-0.5 text-xs font-semibold" :class="isDark ? 'bg-sky-500/20 text-sky-300' : 'bg-sky-100 text-sky-700'" title="Offers General Education subjects">GenEd provider</span>
+                                        <span class="rounded-full px-2.5 py-0.5 text-xs font-semibold" :class="rowTheme(row).pill">{{ rowTheme(row).label }}</span>
+                                    </div>
+
+                                    <div class="flex items-center gap-1">
+                                        <template v-if="!row.deleted_at">
+                                            <Button icon="pi pi-pencil" text rounded severity="secondary" size="small" aria-label="Edit college" title="Edit" @click="openEditCollege(row)" />
+                                            <Button icon="pi pi-trash" text rounded severity="danger" size="small" aria-label="Delete college" title="Delete" @click="onDeleteCollege(row)" />
                                         </template>
-                                    </Column>
-                                    <Column field="status" header="Status" style="width: 10rem">
-                                        <template #body="{ data }">
-                                            <Tag v-if="data.deleted_at" value="Deleted" severity="danger" />
-                                            <Tag
-                                                v-else
-                                                :value="data.status"
-                                                :severity="data.status === 'Active' ? 'success' : 'secondary'"
-                                            />
+                                        <template v-else>
+                                            <Button icon="pi pi-refresh" label="Restore" text severity="success" size="small" @click="onRestoreCollege(row)" />
+                                            <Button icon="pi pi-trash" label="Delete permanently" text severity="danger" size="small" @click="onForceDeleteCollege(row)" />
                                         </template>
-                                    </Column>
-                                    <Column field="counts_as_gened" header="GenEd Provider" style="width: 10rem">
-                                        <template #body="{ data }">
-                                            <Tag
-                                                v-if="data.counts_as_gened"
-                                                value="Yes"
-                                                severity="info"
-                                            />
-                                            <span v-else class="text-xs opacity-60">—</span>
-                                        </template>
-                                    </Column>
-                                    <Column header="Actions" style="width: 13rem">
-                                        <template #body="{ data }">
-                                            <div class="flex gap-1">
-                                                <template v-if="!data.deleted_at">
-                                                    <Button
-                                                        icon="pi pi-pencil"
-                                                        text
-                                                        rounded
-                                                        severity="secondary"
-                                                        size="small"
-                                                        aria-label="Edit"
-                                                        @click="openEditCollege(data)"
-                                                    />
-                                                    <Button
-                                                        icon="pi pi-trash"
-                                                        text
-                                                        rounded
-                                                        severity="danger"
-                                                        size="small"
-                                                        aria-label="Delete"
-                                                        @click="onDeleteCollege(data)"
-                                                    />
-                                                </template>
-                                                <template v-else>
-                                                    <Button
-                                                        icon="pi pi-refresh"
-                                                        text
-                                                        rounded
-                                                        severity="success"
-                                                        size="small"
-                                                        label="Restore"
-                                                        @click="onRestoreCollege(data)"
-                                                    />
-                                                    <Button
-                                                        icon="pi pi-trash"
-                                                        text
-                                                        rounded
-                                                        severity="danger"
-                                                        size="small"
-                                                        label="Delete Permanently"
-                                                        @click="onForceDeleteCollege(data)"
-                                                    />
-                                                </template>
-                                            </div>
-                                        </template>
-                                    </Column>
-                                </DataTable>
-                            </template>
-                        </Card>
+                                    </div>
+                                </li>
+                            </ul>
+
+                            <Paginator
+                                v-if="colleges.total > colleges.per_page"
+                                class="!mt-4 !bg-transparent"
+                                template="PrevPageLink PageLinks NextPageLink"
+                                :rows="colleges.per_page"
+                                :totalRecords="colleges.total"
+                                :first="(colleges.current_page - 1) * colleges.per_page"
+                                @page="onCollegePage"
+                            />
                         </div>
                     </TabPanel>
 
                     <!-- Departments -->
                     <TabPanel value="departments">
-                        <div class="neu-card rounded-2xl transition-colors duration-300 mt-4">
-                        <Card
-                            class="!rounded-2xl !bg-transparent !border-0 !shadow-none"
-                            :pt="{ body: { class: '!bg-transparent' } }"
-                        >
-                            <template #content>
-                                <!-- Top Toolbar -->
-                                <Toolbar class="!bg-transparent !border-0 !px-0 !pt-0 !pb-4 flex-wrap gap-3">
-                                    <template #start>
-                                        <span class="relative w-full sm:w-80">
-                                            <i class="pi pi-search absolute left-3 top-1/2 -translate-y-1/2 text-sm" :class="isDark ? 'text-slate-500' : 'text-slate-400'"></i>
-                                            <InputText
-                                                v-uppercase
-                                                v-model="departmentSearch"
-                                                placeholder="Search by code, name, short name or college"
-                                                class="neu-inset w-full !rounded-xl !border-none !pl-9"
-                                                :class="isDark ? '!text-white placeholder:!text-slate-500' : ''"
-                                            />
-                                        </span>
-                                    </template>
-                                    <template #end>
-                                        <div class="flex items-center gap-2">
-                                            <Button
-                                                icon="pi pi-refresh"
-                                                severity="secondary"
-                                                text
-                                                class="neu-icon-well !rounded-full"
-                                                :loading="departmentLoading"
-                                                @click="onRefreshDepartments"
-                                                aria-label="Refresh"
-                                            />
-                                            <Button label="Add Department" icon="pi pi-plus" @click="openAddDepartment" />
-                                        </div>
-                                    </template>
-                                </Toolbar>
+                        <div class="neu-card mt-4 rounded-2xl p-4 transition-colors duration-300">
+                            <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
+                                <span class="relative w-full sm:w-96">
+                                    <i class="pi pi-search absolute left-3 top-1/2 -translate-y-1/2 text-sm" :class="isDark ? 'text-slate-500' : 'text-slate-400'"></i>
+                                    <InputText
+                                        v-uppercase
+                                        v-model="departmentSearch"
+                                        placeholder="Search by code, name or college"
+                                        class="neu-inset w-full !rounded-xl !border-none !pl-9"
+                                        :class="isDark ? '!text-white placeholder:!text-slate-500' : ''"
+                                    />
+                                </span>
+                                <div class="flex items-center gap-2">
+                                    <Button icon="pi pi-refresh" severity="secondary" text class="neu-icon-well !rounded-full" :loading="departmentLoading" @click="onRefreshDepartments" aria-label="Refresh" />
+                                    <Button label="Add department" icon="pi pi-plus" @click="openAddDepartment" />
+                                </div>
+                            </div>
 
-                                <!-- Departments Table -->
-                                <DataTable
-                                    :value="departments.data"
-                                    :loading="departmentLoading"
-                                    dataKey="id"
-                                    class="neu-inset neu-table rounded-xl overflow-hidden"
-                                    :class="isDark ? 'neu-table-dark' : ''"
-                                    stripedRows
-                                    responsiveLayout="scroll"
-                                    lazy
-                                    paginator
-                                    :rows="departments.per_page"
-                                    :totalRecords="departments.total"
-                                    :first="(departments.current_page - 1) * departments.per_page"
-                                    @page="onDepartmentPage"
+                            <div v-if="!departments.data.length" class="py-12 text-center">
+                                <i class="pi pi-sitemap text-4xl" :class="isDark ? 'text-slate-600' : 'text-slate-300'"></i>
+                                <p class="mt-3 font-medium" :class="isDark ? 'text-slate-300' : 'text-slate-600'">
+                                    {{ departmentSearch ? 'No departments match your search.' : 'No departments yet.' }}
+                                </p>
+                                <p class="mt-1 text-sm" :class="isDark ? 'text-slate-500' : 'text-slate-400'">
+                                    {{ departmentSearch ? 'Try a different code or name.' : 'Add a department under a college.' }}
+                                </p>
+                                <Button v-if="!departmentSearch" label="Add department" icon="pi pi-plus" class="mt-4" @click="openAddDepartment" />
+                            </div>
+
+                            <ul v-else class="space-y-2" :class="departmentLoading ? 'opacity-60 transition-opacity' : ''">
+                                <li
+                                    v-for="row in departments.data"
+                                    :key="row.id"
+                                    class="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border-l-4 px-3 py-2.5"
+                                    :class="[rowTheme(row).edge, rowTheme(row).card, row.deleted_at ? 'opacity-75' : '']"
                                 >
-                                    <template #empty>
-                                        <div class="text-center py-10">
-                                            <p class="text-slate-500 font-medium">No departments found.</p>
-                                            <Button
-                                                label="Add Department"
-                                                icon="pi pi-plus"
-                                                class="mt-3"
-                                                @click="openAddDepartment"
-                                            />
-                                        </div>
-                                    </template>
+                                    <span
+                                        class="inline-flex min-w-[4.5rem] max-w-[11rem] items-center justify-center truncate rounded-lg px-2.5 py-1 text-xs font-bold tracking-wide"
+                                        :style="badgeStyle(row.college?.color)"
+                                        :title="row.code"
+                                    >{{ row.code }}</span>
 
-                                    <Column field="code" header="Department Code" style="width: 10rem" />
-                                    <Column field="name" header="Department Name" />
-                                    <Column header="College" style="width: 14rem">
-                                        <template #body="{ data }">
-                                            {{ data.college?.name || '—' }}
+                                    <div class="min-w-0 flex-1 basis-56">
+                                        <p class="break-words text-[15px] font-semibold leading-snug" :class="isDark ? 'text-white' : 'text-[#1E293B]'">{{ row.name }}</p>
+                                        <p class="mt-0.5 flex flex-wrap items-center gap-x-3 text-xs" :class="isDark ? 'text-slate-400' : 'text-slate-500'">
+                                            <span class="inline-flex items-center gap-1.5"><span class="h-2 w-2 rounded-full" :style="{ backgroundColor: badgeStyle(row.college?.color).backgroundColor }"></span>{{ row.college?.name || 'No college' }}</span>
+                                            <span v-if="row.short_name">{{ row.short_name }}</span>
+                                        </p>
+                                    </div>
+
+                                    <div class="flex items-center gap-1.5">
+
+                                        <span class="rounded-full px-2.5 py-0.5 text-xs font-semibold" :class="rowTheme(row).pill">{{ rowTheme(row).label }}</span>
+                                    </div>
+
+                                    <div class="flex items-center gap-1">
+                                        <template v-if="!row.deleted_at">
+                                            <Button icon="pi pi-pencil" text rounded severity="secondary" size="small" aria-label="Edit department" title="Edit" @click="openEditDepartment(row)" />
+                                            <Button icon="pi pi-trash" text rounded severity="danger" size="small" aria-label="Delete department" title="Delete" @click="onDeleteDepartment(row)" />
                                         </template>
-                                    </Column>
-                                    <Column field="short_name" header="Short Name" style="width: 12rem">
-                                        <template #body="{ data }">
-                                            {{ data.short_name || '—' }}
+                                        <template v-else>
+                                            <Button icon="pi pi-refresh" label="Restore" text severity="success" size="small" @click="onRestoreDepartment(row)" />
+                                            <Button icon="pi pi-trash" label="Delete permanently" text severity="danger" size="small" @click="onForceDeleteDepartment(row)" />
                                         </template>
-                                    </Column>
-                                    <Column field="status" header="Status" style="width: 10rem">
-                                        <template #body="{ data }">
-                                            <Tag v-if="data.deleted_at" value="Deleted" severity="danger" />
-                                            <Tag
-                                                v-else
-                                                :value="data.status"
-                                                :severity="data.status === 'Active' ? 'success' : 'secondary'"
-                                            />
-                                        </template>
-                                    </Column>
-                                    <Column header="Actions" style="width: 13rem">
-                                        <template #body="{ data }">
-                                            <div class="flex gap-1">
-                                                <template v-if="!data.deleted_at">
-                                                    <Button
-                                                        icon="pi pi-pencil"
-                                                        text
-                                                        rounded
-                                                        severity="secondary"
-                                                        size="small"
-                                                        aria-label="Edit"
-                                                        @click="openEditDepartment(data)"
-                                                    />
-                                                    <Button
-                                                        icon="pi pi-trash"
-                                                        text
-                                                        rounded
-                                                        severity="danger"
-                                                        size="small"
-                                                        aria-label="Delete"
-                                                        @click="onDeleteDepartment(data)"
-                                                    />
-                                                </template>
-                                                <template v-else>
-                                                    <Button
-                                                        icon="pi pi-refresh"
-                                                        text
-                                                        rounded
-                                                        severity="success"
-                                                        size="small"
-                                                        label="Restore"
-                                                        @click="onRestoreDepartment(data)"
-                                                    />
-                                                    <Button
-                                                        icon="pi pi-trash"
-                                                        text
-                                                        rounded
-                                                        severity="danger"
-                                                        size="small"
-                                                        label="Delete Permanently"
-                                                        @click="onForceDeleteDepartment(data)"
-                                                    />
-                                                </template>
-                                            </div>
-                                        </template>
-                                    </Column>
-                                </DataTable>
-                            </template>
-                        </Card>
+                                    </div>
+                                </li>
+                            </ul>
+
+                            <Paginator
+                                v-if="departments.total > departments.per_page"
+                                class="!mt-4 !bg-transparent"
+                                template="PrevPageLink PageLinks NextPageLink"
+                                :rows="departments.per_page"
+                                :totalRecords="departments.total"
+                                :first="(departments.current_page - 1) * departments.per_page"
+                                @page="onDepartmentPage"
+                            />
                         </div>
                     </TabPanel>
 
                     <!-- Majors -->
                     <TabPanel value="majors">
-                        <div class="neu-card rounded-2xl transition-colors duration-300 mt-4">
-                        <Card
-                            class="!rounded-2xl !bg-transparent !border-0 !shadow-none"
-                            :pt="{ body: { class: '!bg-transparent' } }"
-                        >
-                            <template #content>
-                                <!-- Top Toolbar -->
-                                <Toolbar class="!bg-transparent !border-0 !px-0 !pt-0 !pb-4 flex-wrap gap-3">
-                                    <template #start>
-                                        <span class="relative w-full sm:w-80">
-                                            <i class="pi pi-search absolute left-3 top-1/2 -translate-y-1/2 text-sm" :class="isDark ? 'text-slate-500' : 'text-slate-400'"></i>
-                                            <InputText
-                                                v-uppercase
-                                                v-model="majorSearch"
-                                                placeholder="Search by code, name, department or college"
-                                                class="neu-inset w-full !rounded-xl !border-none !pl-9"
-                                                :class="isDark ? '!text-white placeholder:!text-slate-500' : ''"
-                                            />
-                                        </span>
-                                    </template>
-                                    <template #end>
-                                        <div class="flex items-center gap-2">
-                                            <Button
-                                                icon="pi pi-refresh"
-                                                severity="secondary"
-                                                text
-                                                class="neu-icon-well !rounded-full"
-                                                :loading="majorLoading"
-                                                @click="onRefreshMajors"
-                                                aria-label="Refresh"
-                                            />
-                                            <Button label="Add Major" icon="pi pi-plus" @click="openAddMajor" />
-                                        </div>
-                                    </template>
-                                </Toolbar>
+                        <div class="neu-card mt-4 rounded-2xl p-4 transition-colors duration-300">
+                            <div class="mb-3 flex flex-wrap items-center justify-between gap-3">
+                                <span class="relative w-full sm:w-96">
+                                    <i class="pi pi-search absolute left-3 top-1/2 -translate-y-1/2 text-sm" :class="isDark ? 'text-slate-500' : 'text-slate-400'"></i>
+                                    <InputText
+                                        v-uppercase
+                                        v-model="majorSearch"
+                                        placeholder="Search by code, name, department or college"
+                                        class="neu-inset w-full !rounded-xl !border-none !pl-9"
+                                        :class="isDark ? '!text-white placeholder:!text-slate-500' : ''"
+                                    />
+                                </span>
+                                <div class="flex items-center gap-2">
+                                    <Button icon="pi pi-refresh" severity="secondary" text class="neu-icon-well !rounded-full" :loading="majorLoading" @click="onRefreshMajors" aria-label="Refresh" />
+                                    <Button label="Add major" icon="pi pi-plus" @click="openAddMajor" />
+                                </div>
+                            </div>
 
-                                <!-- Majors Table -->
-                                <DataTable
-                                    :value="majors.data"
-                                    :loading="majorLoading"
-                                    dataKey="id"
-                                    class="neu-inset neu-table rounded-xl overflow-hidden"
-                                    :class="isDark ? 'neu-table-dark' : ''"
-                                    stripedRows
-                                    responsiveLayout="scroll"
-                                    lazy
-                                    paginator
-                                    :rows="majors.per_page"
-                                    :totalRecords="majors.total"
-                                    :first="(majors.current_page - 1) * majors.per_page"
-                                    @page="onMajorPage"
+                            <div v-if="!majors.data.length" class="py-12 text-center">
+                                <i class="pi pi-book text-4xl" :class="isDark ? 'text-slate-600' : 'text-slate-300'"></i>
+                                <p class="mt-3 font-medium" :class="isDark ? 'text-slate-300' : 'text-slate-600'">
+                                    {{ majorSearch ? 'No majors match your search.' : 'No majors yet.' }}
+                                </p>
+                                <p class="mt-1 text-sm" :class="isDark ? 'text-slate-500' : 'text-slate-400'">
+                                    {{ majorSearch ? 'Try a different code or name.' : 'Add a major under a department.' }}
+                                </p>
+                                <Button v-if="!majorSearch" label="Add major" icon="pi pi-plus" class="mt-4" @click="openAddMajor" />
+                            </div>
+
+                            <ul v-else class="space-y-2" :class="majorLoading ? 'opacity-60 transition-opacity' : ''">
+                                <li
+                                    v-for="row in majors.data"
+                                    :key="row.id"
+                                    class="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border-l-4 px-3 py-2.5"
+                                    :class="[rowTheme(row).edge, rowTheme(row).card, row.deleted_at ? 'opacity-75' : '']"
                                 >
-                                    <template #empty>
-                                        <div class="text-center py-10">
-                                            <p class="text-slate-500 font-medium">No majors found.</p>
-                                            <Button
-                                                label="Add Major"
-                                                icon="pi pi-plus"
-                                                class="mt-3"
-                                                @click="openAddMajor"
-                                            />
-                                        </div>
-                                    </template>
+                                    <span
+                                        class="inline-flex min-w-[4.5rem] max-w-[11rem] items-center justify-center truncate rounded-lg px-2.5 py-1 text-xs font-bold tracking-wide"
+                                        :style="badgeStyle(row.department?.college?.color)"
+                                        :title="row.code"
+                                    >{{ row.code }}</span>
 
-                                    <Column field="code" header="Major Code" style="width: 10rem" />
-                                    <Column field="name" header="Major Name" />
-                                    <Column header="College" style="width: 12rem">
-                                        <template #body="{ data }">
-                                            {{ data.department?.college?.name || '—' }}
+                                    <div class="min-w-0 flex-1 basis-56">
+                                        <p class="break-words text-[15px] font-semibold leading-snug" :class="isDark ? 'text-white' : 'text-[#1E293B]'">{{ row.name }}</p>
+                                        <p class="mt-0.5 flex flex-wrap items-center gap-x-3 text-xs" :class="isDark ? 'text-slate-400' : 'text-slate-500'">
+                                            <span class="inline-flex items-center gap-1.5"><span class="h-2 w-2 rounded-full" :style="{ backgroundColor: badgeStyle(row.department?.college?.color).backgroundColor }"></span>{{ row.department?.college?.name || 'No college' }}</span>
+                                            <span>{{ row.department?.name || 'No department' }}</span>
+                                        </p>
+                                    </div>
+
+                                    <div class="flex items-center gap-1.5">
+                                        <span v-if="row.years" class="rounded-full px-2.5 py-0.5 text-xs font-semibold" :class="isDark ? 'bg-white/10 text-slate-300' : 'bg-slate-100 text-slate-600'">{{ row.years }} {{ Number(row.years) === 1 ? 'year' : 'years' }}</span>
+                                        <span class="rounded-full px-2.5 py-0.5 text-xs font-semibold" :class="rowTheme(row).pill">{{ rowTheme(row).label }}</span>
+                                    </div>
+
+                                    <div class="flex items-center gap-1">
+                                        <template v-if="!row.deleted_at">
+                                            <Button icon="pi pi-pencil" text rounded severity="secondary" size="small" aria-label="Edit major" title="Edit" @click="openEditMajor(row)" />
+                                            <Button icon="pi pi-trash" text rounded severity="danger" size="small" aria-label="Delete major" title="Delete" @click="onDeleteMajor(row)" />
                                         </template>
-                                    </Column>
-                                    <Column header="Department" style="width: 14rem">
-                                        <template #body="{ data }">
-                                            {{ data.department?.name || '—' }}
+                                        <template v-else>
+                                            <Button icon="pi pi-refresh" label="Restore" text severity="success" size="small" @click="onRestoreMajor(row)" />
+                                            <Button icon="pi pi-trash" label="Delete permanently" text severity="danger" size="small" @click="onForceDeleteMajor(row)" />
                                         </template>
-                                    </Column>
-                                    <Column field="years" header="Years" style="width: 7rem" />
-                                    <Column field="status" header="Status" style="width: 10rem">
-                                        <template #body="{ data }">
-                                            <Tag v-if="data.deleted_at" value="Deleted" severity="danger" />
-                                            <Tag
-                                                v-else
-                                                :value="data.status"
-                                                :severity="data.status === 'Active' ? 'success' : 'secondary'"
-                                            />
-                                        </template>
-                                    </Column>
-                                    <Column header="Actions" style="width: 13rem">
-                                        <template #body="{ data }">
-                                            <div class="flex gap-1">
-                                                <template v-if="!data.deleted_at">
-                                                    <Button
-                                                        icon="pi pi-pencil"
-                                                        text
-                                                        rounded
-                                                        severity="secondary"
-                                                        size="small"
-                                                        aria-label="Edit"
-                                                        @click="openEditMajor(data)"
-                                                    />
-                                                    <Button
-                                                        icon="pi pi-trash"
-                                                        text
-                                                        rounded
-                                                        severity="danger"
-                                                        size="small"
-                                                        aria-label="Delete"
-                                                        @click="onDeleteMajor(data)"
-                                                    />
-                                                </template>
-                                                <template v-else>
-                                                    <Button
-                                                        icon="pi pi-refresh"
-                                                        text
-                                                        rounded
-                                                        severity="success"
-                                                        size="small"
-                                                        label="Restore"
-                                                        @click="onRestoreMajor(data)"
-                                                    />
-                                                    <Button
-                                                        icon="pi pi-trash"
-                                                        text
-                                                        rounded
-                                                        severity="danger"
-                                                        size="small"
-                                                        label="Delete Permanently"
-                                                        @click="onForceDeleteMajor(data)"
-                                                    />
-                                                </template>
-                                            </div>
-                                        </template>
-                                    </Column>
-                                </DataTable>
-                            </template>
-                        </Card>
+                                    </div>
+                                </li>
+                            </ul>
+
+                            <Paginator
+                                v-if="majors.total > majors.per_page"
+                                class="!mt-4 !bg-transparent"
+                                template="PrevPageLink PageLinks NextPageLink"
+                                :rows="majors.per_page"
+                                :totalRecords="majors.total"
+                                :first="(majors.current_page - 1) * majors.per_page"
+                                @page="onMajorPage"
+                            />
                         </div>
                     </TabPanel>
                 </TabPanels>
@@ -1650,4 +1519,10 @@ const onForceDeleteMajor = (major) => {
 .dark-scope :deep(.p-menu) { background: #0F1730 !important; border-color: rgba(255, 255, 255, 0.1) !important; color: #F8FAFC !important; }
 .dark-scope :deep(.p-menu .p-menu-item-link) { color: #E2E8F0 !important; }
 .dark-scope :deep(.p-menu .p-menu-item-link:hover) { background: rgba(255, 255, 255, 0.06) !important; }
+
+.dark-scope :deep(.p-paginator) { background: transparent !important; color: #CBD5E1; }
+.dark-scope :deep(.p-paginator-page),
+.dark-scope :deep(.p-paginator-prev),
+.dark-scope :deep(.p-paginator-next) { color: #CBD5E1 !important; }
+.dark-scope :deep(.p-paginator-page.p-paginator-page-selected) { background: rgba(96, 165, 250, 0.2) !important; color: #BFDBFE !important; }
 </style>

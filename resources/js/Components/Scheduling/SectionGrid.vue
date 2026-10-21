@@ -47,6 +47,7 @@ import { router } from '@inertiajs/vue3';
 import Button from 'primevue/button';
 import { useToast } from 'primevue/usetoast';
 import Swal from 'sweetalert2';
+import { useCollegeColors, collegeSolidStyle } from '@/composables/useCollegeColors';
 
 const props = defineProps({
     section: { type: Object, required: true },
@@ -56,6 +57,13 @@ const props = defineProps({
 });
 
 const emit = defineEmits(['row-updated']);
+
+// COLLEGE COLOR — the Section's owning College (e.g. BSIT -> CCS), colored
+// per Settings -> College Colors. Applied to the Room-based (view-only)
+// blocks; Online blocks keep their own sky-blue so "Online" stays obvious.
+const { colorFor } = useCollegeColors();
+const sectionCollegeColor = computed(() => colorFor(props.section?.major?.department?.college_id ?? null));
+const roomBlockColorStyle = computed(() => collegeSolidStyle(sectionCollegeColor.value));
 
 const toast = useToast();
 
@@ -409,7 +417,7 @@ const removeFromGrid = async (row) => {
             </p>
             <div class="flex items-center gap-3 text-[9px] text-slate-400 mb-1.5">
                 <span class="flex items-center gap-1"><span class="inline-block h-1.5 w-1.5 rounded-full bg-sky-400"></span>Online</span>
-                <span class="flex items-center gap-1"><span class="inline-block h-1.5 w-1.5 rounded-full bg-violet-400"></span>Room (view only)</span>
+                <span class="flex items-center gap-1"><span class="inline-block h-1.5 w-1.5 rounded-full" :style="{ backgroundColor: sectionCollegeColor }"></span>Room (view only)</span>
             </div>
             <div v-if="!unscheduledRows.length" class="text-xs text-slate-400 py-1.5">
                 Every subject in this section has Days &amp; Time set.
@@ -580,10 +588,11 @@ const removeFromGrid = async (row) => {
                         <div
                             v-for="day in rowDayTokens(row)"
                             :key="`roomblock-${row.id}-${day}`"
-                            class="relative z-[5] m-[1px] rounded-md px-2 py-1 overflow-hidden text-white text-[11px] leading-tight bg-violet-500/90 cursor-default"
+                            class="relative z-[5] m-[1px] rounded-md px-2 py-1 overflow-hidden text-[11px] leading-tight cursor-default"
                             :style="{
                                 gridRow: `${blockFor(row).startRow} / span ${blockFor(row).span}`,
                                 gridColumn: days.indexOf(day) + 2,
+                                ...roomBlockColorStyle,
                             }"
                             :title="`${row.subject?.subject_code} — ${row.room?.room_name ?? 'Room TBA'} — ${row.faculty ? row.faculty.last_name : 'No faculty yet'} — ${to12Hour(row.start_time)}–${to12Hour(row.end_time)} — placed via Room Grid`"
                         >

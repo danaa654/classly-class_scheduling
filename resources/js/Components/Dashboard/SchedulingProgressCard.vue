@@ -1,7 +1,6 @@
 <script setup>
-import { computed } from 'vue';
-import Card from 'primevue/card';
-import ProgressBar from 'primevue/progressbar';
+import { Link } from '@inertiajs/vue3';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 
 const props = defineProps({
     progress: {
@@ -10,6 +9,9 @@ const props = defineProps({
         // { overall_percent, sections_scheduled, sections_total,
         //   faculty_assigned, rooms_assigned, total_subjects }
     },
+    // Number of fully scheduled subjects (Dashboard passes kpis.scheduled_subjects).
+    // Optional: without it the card just doesn't show the "x of y" / "left" wording.
+    scheduled: { type: Number, default: null },
     isDark: { type: Boolean, default: false },
 });
 
@@ -17,86 +19,111 @@ const props = defineProps({
 // since it's describing overall scheduling completion, not Faculty
 // Workload status (which uses FacultyWorkloadService's own 85/100
 // thresholds — a different question with different colors).
-const barColorClass = computed(() => {
+const tone = computed(() => {
     const percent = props.progress.overall_percent;
 
-    if (percent >= 90) return '!bg-emerald-500';
-    if (percent >= 70) return '!bg-amber-500';
+    if (percent >= 90) return { stroke: '#10b981', text: props.isDark ? 'text-emerald-400' : 'text-emerald-600' };
+    if (percent >= 70) return { stroke: '#f59e0b', text: props.isDark ? 'text-amber-400' : 'text-amber-600' };
 
-    return '!bg-red-500';
+    return { stroke: '#ef4444', text: props.isDark ? 'text-red-400' : 'text-red-600' };
 });
 
-const textColorClass = computed(() => {
-    const percent = props.progress.overall_percent;
+const remaining = computed(() => (props.scheduled === null ? null : Math.max(0, props.progress.total_subjects - props.scheduled)));
 
-    if (percent >= 90) return props.isDark ? 'text-emerald-400' : 'text-emerald-600';
-    if (percent >= 70) return props.isDark ? 'text-amber-400' : 'text-amber-600';
+/* ---------- ring (the page's one load-in moment) ---------- */
+// Fills from 0 to the real percent and counts the number up once on mount.
+// Skipped entirely when the user prefers reduced motion.
+const R = 52;
+const C = 2 * Math.PI * R;
+const target = computed(() => Math.min(Math.max(props.progress.overall_percent ?? 0, 0), 100));
+const shown = ref(0);
+let frame = null;
 
-    return props.isDark ? 'text-red-400' : 'text-red-600';
+onMounted(() => {
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+        shown.value = target.value;
+        return;
+    }
+    const start = performance.now();
+    const duration = 1000;
+    const tick = (now) => {
+        const t = Math.min((now - start) / duration, 1);
+        const eased = 1 - Math.pow(1 - t, 3);
+        shown.value = target.value * eased;
+        if (t < 1) frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
 });
+onBeforeUnmount(() => frame && cancelAnimationFrame(frame));
 
-const cardPt = computed(() => ({
-    body: { class: props.isDark ? '!bg-transparent' : '' },
-}));
+const dashOffset = computed(() => C * (1 - shown.value / 100));
 
-const washClass = computed(() => {
-    const percent = props.progress.overall_percent;
-
-    if (percent >= 90) return props.isDark ? 'from-emerald-500/10' : 'from-emerald-50';
-    if (percent >= 70) return props.isDark ? 'from-amber-500/10' : 'from-amber-50';
-
-    return props.isDark ? 'from-red-500/10' : 'from-red-50';
-});
+const stats = computed(() => [
+    { label: 'Sections scheduled', value: props.progress.sections_scheduled, total: props.progress.sections_total },
+    { label: 'Faculty assigned', value: props.progress.faculty_assigned, total: props.progress.total_subjects },
+    { label: 'Rooms assigned', value: props.progress.rooms_assigned, total: props.progress.total_subjects },
+]);
 </script>
 
 <template>
-    <div class="neu-card rounded-2xl bg-gradient-to-br via-transparent to-transparent" :class="washClass">
-        <Card
-            class="!rounded-2xl !bg-transparent transition-colors duration-300"
-            :pt="cardPt"
-        >
-        <template #title>
-            <span class="text-lg font-bold" :class="isDark ? 'text-white' : 'text-[#1E293B]'">Scheduling Progress</span>
-        </template>
-        <template #content>
-            <div class="mb-1 flex items-end justify-between">
-                <span class="text-sm" :class="isDark ? 'text-slate-400' : 'text-slate-500'">
-                    {{ progress.total_subjects > 0 ? `${progress.overall_percent}% of subjects scheduled` : 'No subjects to schedule yet' }}
-                </span>
-                <span class="text-2xl font-bold" :class="textColorClass">{{ progress.overall_percent }}%</span>
+    <div class="neu-card flex h-full flex-col rounded-2xl p-6 transition-colors duration-300">
+        <h2 class="text-lg font-bold" :class="isDark ? 'text-white' : 'text-[#1E293B]'">Scheduling Progress</h2>
+
+        <div class="mt-4 flex flex-1 flex-col items-center gap-6 sm:flex-row">
+            <!-- Ring -->
+            <div class="relative h-40 w-40 flex-none">
+                <svg viewBox="0 0 120 120" class="h-full w-full -rotate-90" role="img" :aria-label="`${progress.overall_percent}% of subjects scheduled`">
+                    <circle cx="60" cy="60" :r="R" fill="none" stroke-width="10" :stroke="isDark ? 'rgba(255,255,255,0.1)' : 'rgba(15,23,42,0.08)'" />
+                    <circle
+                        cx="60"
+                        cy="60"
+                        :r="R"
+                        fill="none"
+                        stroke-width="10"
+                        stroke-linecap="round"
+                        :stroke="tone.stroke"
+                        :stroke-dasharray="C"
+                        :stroke-dashoffset="dashOffset"
+                    />
+                </svg>
+                <div class="absolute inset-0 flex flex-col items-center justify-center">
+                    <span class="text-4xl font-bold tabular-nums" :class="tone.text">{{ Math.round(shown) }}<span class="text-xl">%</span></span>
+                    <span class="text-xs" :class="isDark ? 'text-slate-400' : 'text-slate-500'">scheduled</span>
+                </div>
             </div>
 
-            <ProgressBar
-                :value="progress.overall_percent"
-                :showValue="false"
-                class="neu-inset mb-6 h-2.5 !bg-transparent"
-                :pt="{
-                    root: { class: '!bg-transparent' },
-                    value: { class: barColorClass },
-                }"
-            />
-
-            <div class="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                <div class="neu-inset rounded-xl p-4">
-                    <p class="text-xs font-semibold tracking-wide uppercase" :class="isDark ? 'text-slate-400' : 'text-slate-400'">Sections Scheduled</p>
-                    <p class="mt-1 text-xl font-bold" :class="isDark ? 'text-white' : 'text-[#1E293B]'">
-                        {{ progress.sections_scheduled }} <span class="text-sm font-medium" :class="isDark ? 'text-slate-500' : 'text-slate-400'">/ {{ progress.sections_total }}</span>
+            <!-- Headline + action -->
+            <div class="min-w-0 flex-1 text-center sm:text-left">
+                <template v-if="progress.total_subjects > 0">
+                    <p class="text-2xl font-bold tabular-nums" :class="isDark ? 'text-white' : 'text-[#1E293B]'">
+                        <template v-if="scheduled !== null">{{ scheduled }} <span class="text-base font-medium" :class="isDark ? 'text-slate-400' : 'text-slate-500'">of {{ progress.total_subjects }} subjects</span></template>
+                        <template v-else>{{ progress.overall_percent }}% <span class="text-base font-medium" :class="isDark ? 'text-slate-400' : 'text-slate-500'">of subjects scheduled</span></template>
                     </p>
-                </div>
-                <div class="neu-inset rounded-xl p-4">
-                    <p class="text-xs font-semibold tracking-wide uppercase" :class="isDark ? 'text-slate-400' : 'text-slate-400'">Faculty Assigned</p>
-                    <p class="mt-1 text-xl font-bold" :class="isDark ? 'text-white' : 'text-[#1E293B]'">
-                        {{ progress.faculty_assigned }} <span class="text-sm font-medium" :class="isDark ? 'text-slate-500' : 'text-slate-400'">/ {{ progress.total_subjects }}</span>
-                    </p>
-                </div>
-                <div class="neu-inset rounded-xl p-4">
-                    <p class="text-xs font-semibold tracking-wide uppercase" :class="isDark ? 'text-slate-400' : 'text-slate-400'">Rooms Assigned</p>
-                    <p class="mt-1 text-xl font-bold" :class="isDark ? 'text-white' : 'text-[#1E293B]'">
-                        {{ progress.rooms_assigned }} <span class="text-sm font-medium" :class="isDark ? 'text-slate-500' : 'text-slate-400'">/ {{ progress.total_subjects }}</span>
-                    </p>
-                </div>
+                    <p v-if="remaining === 0" class="mt-1 text-sm font-medium" :class="isDark ? 'text-emerald-300' : 'text-emerald-700'">Every subject has a day and time.</p>
+                    <template v-else-if="remaining !== null">
+                        <p class="mt-1 text-sm" :class="isDark ? 'text-slate-300' : 'text-slate-600'">
+                            {{ remaining }} {{ remaining === 1 ? 'subject is' : 'subjects are' }} still waiting for a day and time.
+                        </p>
+                        <Link
+                            :href="route('scheduling.section-subjects')"
+                            class="mt-3 inline-flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-md shadow-blue-600/25 transition hover:bg-blue-700"
+                        >
+                            Open Section Subjects
+                            <i class="pi pi-arrow-right text-xs"></i>
+                        </Link>
+                    </template>
+                </template>
+                <p v-else class="text-sm" :class="isDark ? 'text-slate-400' : 'text-slate-500'">No subjects to schedule yet.</p>
             </div>
-        </template>
-        </Card>
+        </div>
+
+        <div class="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div v-for="stat in stats" :key="stat.label" class="neu-inset rounded-xl p-4">
+                <p class="text-xs font-medium" :class="isDark ? 'text-slate-400' : 'text-slate-500'">{{ stat.label }}</p>
+                <p class="mt-1 text-xl font-bold tabular-nums" :class="isDark ? 'text-white' : 'text-[#1E293B]'">
+                    {{ stat.value }} <span class="text-sm font-medium" :class="isDark ? 'text-slate-500' : 'text-slate-400'">/ {{ stat.total }}</span>
+                </p>
+            </div>
+        </div>
     </div>
 </template>

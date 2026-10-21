@@ -699,7 +699,11 @@ class RecommendationService
             default => [self::COLLEGE_POINTS_NO_CONFLICT, self::COLLEGE_POINTS_LOW_LOAD, self::COLLEGE_POINTS_FULL_TIME],
         };
 
-        $ranked = $candidates->map(function (Faculty $faculty) use ($subject, $current, $isTeachingQualification, $isGenEdMatch, $tier, $noConflictMax, $lowLoadMax, $fullTimeMax) {
+        // PERFORMANCE (N+1) — every candidate's current placements are
+        // loaded in ONE query for the duration of this read-only pass
+        // (see FacultyWorkloadService::withPreloadedPlacements()),
+        // instead of two queries per candidate for load + overload.
+        $ranked = $this->workloadService->withPreloadedPlacements($candidates, fn () => $candidates->map(function (Faculty $faculty) use ($subject, $current, $isTeachingQualification, $isGenEdMatch, $tier, $noConflictMax, $lowLoadMax, $fullTimeMax) {
             $currentLoad = $this->currentTeachingLoad($faculty, $current);
             $loadRatio = $faculty->max_teaching_units > 0 ? $currentLoad / $faculty->max_teaching_units : 0;
             $wouldExceedLoad = $this->workloadService->wouldExceed($faculty, $subject, $current?->id);
@@ -775,7 +779,7 @@ class RecommendationService
                 'score_breakdown' => $points,
                 'reasons' => $reasons,
             ];
-        })->values()->all();
+        })->values()->all());
 
         // RANK BY SCORE — highest Recommendation Score first. Ties are
         // broken by lowest current teaching load, then fewest
@@ -2090,17 +2094,17 @@ class RecommendationService
                 $hasConflict = false;
 
                 if ($section->id) {
-                    $hasConflict = $hasConflict || (bool) $this->conflictService->findSectionConflict(
+                    $hasConflict = $hasConflict || $this->conflictService->hasSectionConflict(
                         $section->id, $excludingId, $days, $start, $end
                     );
                 }
                 if (! $hasConflict && $facultyId) {
-                    $hasConflict = (bool) $this->conflictService->findFacultyConflict(
+                    $hasConflict = $this->conflictService->hasFacultyConflict(
                         $facultyId, $excludingId, $days, $start, $end
                     );
                 }
                 if (! $hasConflict && $roomId) {
-                    $hasConflict = (bool) $this->conflictService->findRoomConflict(
+                    $hasConflict = $this->conflictService->hasRoomConflict(
                         $roomId, $excludingId, $days, $start, $end
                     );
                 }
@@ -2236,17 +2240,17 @@ class RecommendationService
                 $hasConflict = false;
 
                 if ($section->id) {
-                    $hasConflict = $hasConflict || (bool) $this->conflictService->findSectionConflict(
+                    $hasConflict = $hasConflict || $this->conflictService->hasSectionConflict(
                         $section->id, $excludingId, $days, $start, $end
                     );
                 }
                 if (! $hasConflict && $facultyId) {
-                    $hasConflict = (bool) $this->conflictService->findFacultyConflict(
+                    $hasConflict = $this->conflictService->hasFacultyConflict(
                         $facultyId, $excludingId, $days, $start, $end
                     );
                 }
                 if (! $hasConflict && $roomId) {
-                    $hasConflict = (bool) $this->conflictService->findRoomConflict(
+                    $hasConflict = $this->conflictService->hasRoomConflict(
                         $roomId, $excludingId, $days, $start, $end
                     );
                 }
@@ -2817,11 +2821,9 @@ class RecommendationService
 
         $dayTokens = array_filter(explode(',', $current->days));
 
-        $conflict = $this->conflictService->findFacultyConflict(
+        return $this->conflictService->hasFacultyConflict(
             $faculty->id, $current->id, $dayTokens, $current->start_time, $current->end_time
-        );
-
-        return $conflict ? 1 : 0;
+        ) ? 1 : 0;
     }
 
     /**
@@ -2837,11 +2839,9 @@ class RecommendationService
 
         $dayTokens = array_filter(explode(',', $current->days));
 
-        $conflict = $this->conflictService->findRoomConflict(
+        return $this->conflictService->hasRoomConflict(
             $room->id, $current->id, $dayTokens, $current->start_time, $current->end_time
-        );
-
-        return $conflict ? 1 : 0;
+        ) ? 1 : 0;
     }
 
 }

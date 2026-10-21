@@ -53,8 +53,7 @@ export default defineConfig({
                 manualChunks: {
                     'vendor-vue': ['vue', '@inertiajs/vue3'],
                     'vendor-primevue': ['primevue/config', 'primevue/toastservice', '@primeuix/themes'],
-                    'vendor-charts': ['chart.js'],
-                    'vendor-icons': ['@heroicons/vue', '@tabler/icons-vue', 'primeicons'],
+                    'vendor-icons': ['primeicons'],
                     'vendor-utils': ['sweetalert2', 'axios'],
                 },
             },
@@ -68,7 +67,7 @@ export default defineConfig({
         host: '0.0.0.0',
         port: 5173,
         hmr: {
-            host: '192.168.1.6',
+            host: '192.168.1.7',
         },
         watch: {
             ignored: ['**/storage/framework/views/**'],

@@ -32,11 +32,14 @@ use App\Support\ViewingTerm;
  *     scoped at the SectionSubject level, not the Section level,
  *     since GenEd subjects live inside Sections that otherwise
  *     belong to Majors the Assistant Dean has no visibility into.
- *     NOTE: the source spec also mentions "Minor subjects" — the
- *     Subject model currently only distinguishes 'Major' vs
- *     'General Education' (see subjects table), so that half of the
- *     scope isn't representable yet. Revisit if/when a Minor
- *     category is added.
+ *     The scope also covers 'Minor' subjects (the subjects table
+ *     now has a 'Minor' category alongside 'Major' and 'General
+ *     Education').
+ *   - Dean / OIC also flagged is_gened_assistant_dean
+ *                               -> own College's subjects PLUS
+ *     General Education / Minor subjects in any College's Sections
+ *     (scope type 'college_gened'). Never other Colleges' Major
+ *     subjects.
  *   - Any other/no role         -> nothing (fail safe, not fail
  *     open).
  *
@@ -147,15 +150,30 @@ class DashboardService
         if ($roles->contains('Dean') || $roles->contains('OIC')) {
             $user->loadMissing('college:id,name,short_name');
 
+            $collegeLabel = $user->college?->short_name ?? $user->college?->name;
+
+            // A Dean/OIC who is ALSO flagged as GenEd/Minor Assistant
+            // Dean (users.is_gened_assistant_dean) keeps their own
+            // College scope AND gains GenEd/Minor everywhere — same
+            // rule as AccessScope::isAssistantDean() and
+            // SectionSubject::scopeVisibleTo().
+            if ($user->is_gened_assistant_dean) {
+                return [
+                    'type' => 'college_gened',
+                    'college_id' => $user->college_id,
+                    'label' => trim(($collegeLabel ?? '').' + General Education / Minor Subjects'),
+                ];
+            }
+
             return [
                 'type' => 'college',
                 'college_id' => $user->college_id,
-                'label' => $user->college?->short_name ?? $user->college?->name,
+                'label' => $collegeLabel,
             ];
         }
 
         if ($roles->contains('Assistant Dean')) {
-            return ['type' => 'general_education', 'college_id' => null, 'label' => 'General Education Subjects'];
+            return ['type' => 'general_education', 'college_id' => null, 'label' => 'General Education / Minor Subjects'];
         }
 
         return ['type' => 'none', 'college_id' => null, 'label' => null];
@@ -174,7 +192,24 @@ class DashboardService
         $activeSectionIds = $this->conflictService->activeSemesterSectionIds();
 
         return match ($scope['type']) {
-            'institution', 'general_education' => $activeSectionIds,
+            'institution' => $activeSectionIds,
+            // GenEd/Minor subjects can sit inside a Section of any
+            // Major/College, so the real filtering happens per
+            // SectionSubject (see sectionSubjectsQuery()). Sections are
+            // still trimmed to ones that actually contain an in-scope
+            // subject (plus, for the dual-role Dean/OIC, their own
+            // College's Sections) so the "Sections" counts don't
+            // include Sections with none of this user's subjects.
+            'general_education', 'college_gened' => Section::query()
+                ->whereIn('id', $activeSectionIds)
+                ->where(function (Builder $outer) use ($scope) {
+                    $outer->whereHas('sectionSubjects', fn (Builder $ss) => $ss->inScope(true, null));
+
+                    if ($scope['type'] === 'college_gened') {
+                        $outer->orWhereHas('major.department', fn (Builder $q) => $q->where('college_id', $scope['college_id'] ?? -1));
+                    }
+                })
+                ->pluck('id'),
             'college' => $scope['college_id']
                 ? Section::query()
                     ->whereIn('id', $activeSectionIds)
@@ -195,8 +230,14 @@ class DashboardService
     {
         $query = SectionSubject::query()->whereIn('section_id', $sectionIds);
 
+        // Shared GenEd/Minor subjects (the Assistant Dean's whole
+        // scope) and/or the user's own College's Sections — see
+        // SectionSubject::scopeInScope(). 'college' and
+        // 'institution' keep their existing Section-level scoping.
         if ($scope['type'] === 'general_education') {
-            $query->whereHas('subject', fn (Builder $q) => $q->where('category', 'General Education'));
+            $query->inScope(true, null);
+        } elseif ($scope['type'] === 'college_gened') {
+            $query->inScope(true, $scope['college_id'] ?? -1);
         }
 
         return $query;
@@ -218,6 +259,11 @@ class DashboardService
         if ($scope['type'] === 'college') {
             $facultyQuery->where('college_id', $scope['college_id']);
             $roomQuery->where('college_id', $scope['college_id']);
+        } elseif ($scope['type'] === 'college_gened') {
+            // Own College's roster/rooms PLUS the shared GenEd pool
+            // (no College) — the same two pools this user can schedule.
+            $facultyQuery->where(fn (Builder $q) => $q->where('college_id', $scope['college_id'])->orWhereNull('college_id'));
+            $roomQuery->where(fn (Builder $q) => $q->where('college_id', $scope['college_id'])->orWhereNull('college_id'));
         } elseif ($scope['type'] === 'general_education') {
             // GenEd Faculty/Rooms carry no College — see
             // Faculty::getFacultyCategoryAttribute().

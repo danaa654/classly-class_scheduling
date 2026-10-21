@@ -6,21 +6,74 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 /**
  * A Faculty Master record.
  *
- * IMPORTANT: Faculty members are NOT system users — they never log in.
- * This model exists purely so the registrar/admin can maintain a roster
- * of people available to be assigned teaching loads during scheduling.
- * Subject/schedule/room/section assignment is handled by later modules;
- * this model only stores faculty identity and eligibility information.
+ * A Faculty record is a roster entry the registrar/admin maintains so
+ * people can be assigned teaching loads during scheduling. It is NOT
+ * itself a login. Optionally (faculties.user_id) a Faculty-role user
+ * account can be linked to it — created from the Faculty page via
+ * FacultyAccountService — so the faculty member can log in and see only
+ * their own schedule (MyScheduleController). Subject/schedule/room/
+ * section assignment is handled by other modules; this model only
+ * stores faculty identity and eligibility information.
  */
 class Faculty extends Model
 {
     use HasFactory;
     use SoftDeletes;
+
+    /**
+     * Keep the linked login in step with the roster record, so a
+     * deactivated/removed faculty member can't keep logging in and an
+     * email fix doesn't leave the login on the old address.
+     * (user_id itself is never mass-assignable — it's set only by
+     * FacultyAccountService.)
+     */
+    protected static function booted(): void
+    {
+        static::saved(function (Faculty $faculty) {
+            if (! $faculty->user_id) {
+                return;
+            }
+
+            // Only on an actual status change — never re-activate an
+            // account an admin deactivated by hand just because this
+            // roster row was saved for some other reason.
+            if ($faculty->wasChanged('status')) {
+                \App\Models\User::query()->whereKey($faculty->user_id)
+                    ->update(['status' => $faculty->status === 'Active' ? 'Active' : 'Inactive']);
+            }
+
+            if ($faculty->wasChanged('email') && filled($faculty->email)) {
+                $email = \Illuminate\Support\Str::lower(trim($faculty->email));
+                $taken = \App\Models\User::query()
+                    ->whereRaw('LOWER(email) = ?', [$email])
+                    ->where('id', '!=', $faculty->user_id)
+                    ->exists();
+
+                if (! $taken) {
+                    \App\Models\User::query()->whereKey($faculty->user_id)->update(['email' => $email]);
+                }
+            }
+        });
+
+        // Soft delete (and force delete) both land here.
+        static::deleted(function (Faculty $faculty) {
+            if ($faculty->user_id) {
+                \App\Models\User::query()->whereKey($faculty->user_id)->update(['status' => 'Inactive']);
+            }
+        });
+
+        static::restored(function (Faculty $faculty) {
+            if ($faculty->user_id && $faculty->status === 'Active') {
+                \App\Models\User::query()->whereKey($faculty->user_id)->update(['status' => 'Active']);
+            }
+        });
+    }
 
     /**
      * The attributes that are mass assignable.
@@ -89,6 +142,31 @@ class Faculty extends Model
     public function scheduleEmails(): \Illuminate\Database\Eloquent\Relations\HasMany
     {
         return $this->hasMany(FacultyScheduleEmail::class);
+    }
+
+    /**
+     * Time windows this faculty member is AVAILABLE to teach (one row
+     * per Day per window). No rows at all means "no restriction" —
+     * available any time within the school's class hours. Enforced by
+     * ScheduleConflictService::findFacultyAvailabilityViolation() for
+     * Auto Generate, Recommend Day & Time, and every manual save.
+     *
+     * @return HasMany<FacultyAvailability>
+     */
+    public function availabilities(): HasMany
+    {
+        return $this->hasMany(FacultyAvailability::class);
+    }
+
+    /**
+     * The login account linked to this faculty member (Faculty role), if
+     * one has been created. See FacultyAccountService.
+     *
+     * @return BelongsTo<User, Faculty>
+     */
+    public function user(): BelongsTo
+    {
+        return $this->belongsTo(User::class);
     }
 
     /**
